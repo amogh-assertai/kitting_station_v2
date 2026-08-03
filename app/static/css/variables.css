@@ -1,0 +1,43 @@
+/*
+  Theme tokens.
+
+  Applied via [data-theme="dark"] / [data-theme="light"] on <html>.
+  data-theme is set server-side (see base.html) from a cookie so the
+  correct theme applies on first paint - no flash of wrong theme.
+*/
+
+:root,
+[data-theme="dark"] {
+  --color-bg: #0f1419;
+  --color-surface: #1a2129;
+  --color-border: #2a333d;
+  --color-text-primary: #e6e9ec;
+  --color-text-muted: #8b96a3;
+  --color-accent: #3b9eff;
+  --color-accent-hover-bg: #1e2a38;
+
+  --font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2.5rem;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  --transition-theme: background-color 0.2s ease, color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+[data-theme="light"] {
+  --color-bg: #f5f7f9;
+  --color-surface: #ffffff;
+  --color-border: #dde2e7;
+  --color-text-primary: #1a2129;
+  --color-text-muted: #5c6773;
+  --color-accent: #0066cc;
+  --color-accent-hover-bg: #e6f0fb;
+}

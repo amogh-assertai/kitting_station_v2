@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+data/pqpr/*
+!data/pqpr/.gitkeep
+server_related/

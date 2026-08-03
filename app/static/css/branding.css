@@ -1,0 +1,35 @@
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.app-brand__logo-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #ffffff;
+  border-radius: var(--radius-sm);
+  padding: 4px var(--spacing-sm);
+  line-height: 0;
+}
+
+.app-brand__logo {
+  height: 24px;
+  width: auto;
+}
+
+.app-brand__text {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-xs);
+}
+
+.app-version {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  background-color: var(--color-accent-hover-bg);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}

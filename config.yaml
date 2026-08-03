@@ -1,0 +1,37 @@
+app:
+  name: "Kitting Station"
+  version: "2.0"
+  host: "0.0.0.0"
+  port: 5000
+  debug: true
+
+client:
+  name: "Watts Water"
+  brand: "Dormont"
+  logo_path: "images/watts_logo.png"
+
+developer:
+  name: "AssertAI"
+
+storage:
+  pqpr_dir: "data/pqpr"
+  pqpr_allowed_extensions: [".xlsx", ".xls"]
+  max_upload_size_mb: 20
+
+pqpr_parsing:
+  sheet_name: "PQPR - FG -- Copy"
+  header_row: 1
+  kit_name_column: "B"
+  edp_column: "C"
+  component_start_column: "H"
+  top10_row_count: 10
+
+theme:
+  default: "dark"
+  cookie_name: "theme_preference"
+  cookie_max_age_days: 365
+
+features:
+  live_kitting_activities: true
+  history: true
+  configuration: true

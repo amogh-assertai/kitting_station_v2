@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}PQPR Analytics — {{ app_name }}{% endblock %}
+
+{% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
+
+{% block content %}
+  <div
+    id="pqpr-upload-widget"
+    class="upload-widget"
+    data-upload-url="{{ url_for('configuration.pqpr_upload') }}"
+    data-download-url="{{ url_for('configuration.pqpr_download') }}"
+  >
+    <div class="upload-widget__info">
+      {% if pqpr_meta %}
+        <span class="upload-widget__filename" id="pqpr-filename">{{ pqpr_meta.original_filename }}</span>
+        <span
+          class="upload-widget__timestamp"
+          id="pqpr-timestamp"
+          data-uploaded-at="{{ pqpr_meta.uploaded_at }}"
+        >Uploaded: {{ pqpr_meta.uploaded_at }}</span>
+      {% else %}
+        <span class="upload-widget__empty" id="pqpr-filename">No PQPR file uploaded yet.</span>
+        <span class="upload-widget__timestamp" id="pqpr-timestamp"></span>
+      {% endif %}
+    </div>
+
+    <div class="upload-widget__actions">
+      <button
+        type="button"
+        id="pqpr-download-btn"
+        class="btn btn--secondary"
+        {% if not pqpr_meta %}disabled{% endif %}
+      >Download</button>
+
+      <label class="btn btn--primary" for="pqpr-file-input">
+        <span id="pqpr-upload-label">{% if pqpr_meta %}Replace File{% else %}Upload File{% endif %}</span>
+        <input type="file" id="pqpr-file-input" accept=".xlsx,.xls" hidden>
+      </label>
+    </div>
+
+    <div id="pqpr-upload-status" class="upload-widget__status" role="status" aria-live="polite"></div>
+  </div>
+
+  <p class="pqpr-placeholder-note" id="pqpr-no-data-note" {% if pqpr_meta %}hidden{% endif %}>
+    Upload a PQPR file to search kits and components.
+  </p>
+
+  <div
+    id="pqpr-search-panels"
+    class="split-panels"
+    data-search-kits-url="{{ url_for('configuration.pqpr_search_kits') }}"
+    data-kit-details-url="{{ url_for('configuration.pqpr_kit_details') }}"
+    data-search-components-url="{{ url_for('configuration.pqpr_search_components') }}"
+    data-component-details-url="{{ url_for('configuration.pqpr_component_details') }}"
+    {% if not pqpr_meta %}hidden{% endif %}
+  >
+    <section class="split-panel">
+      <h2 class="split-panel__title">Find components in a kit</h2>
+      <div class="search-box">
+        <input
+          type="text"
+          id="kit-search-input"
+          class="search-box__input"
+          placeholder="Type kit name or EDP #..."
+          autocomplete="off"
+        >
+        <button type="button" id="kit-search-btn" class="search-box__btn">Search</button>
+        <ul id="kit-suggestions" class="search-box__suggestions" hidden></ul>
+      </div>
+      <div id="kit-details" class="details-panel"></div>
+    </section>
+
+    <section class="split-panel">
+      <h2 class="split-panel__title">Find kits using a component</h2>
+      <div class="search-box">
+        <input
+          type="text"
+          id="component-search-input"
+          class="search-box__input"
+          placeholder="Type component name..."
+          autocomplete="off"
+        >
+        <button type="button" id="component-search-btn" class="search-box__btn">Search</button>
+        <ul id="component-suggestions" class="search-box__suggestions" hidden></ul>
+      </div>
+      <div id="component-details" class="details-panel"></div>
+    </section>
+  </div>
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{{ url_for('static', filename='js/pqpr-upload.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/pqpr-search.js') }}"></script>
+{% endblock %}

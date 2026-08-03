@@ -1,0 +1,31 @@
+.app-subnav {
+  border-bottom: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+  transition: var(--transition-theme);
+}
+
+.app-subnav__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 var(--spacing-lg);
+  display: flex;
+  gap: var(--spacing-md);
+}
+
+.app-subnav__link {
+  padding: var(--spacing-sm) var(--spacing-xs);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  border-bottom: 2px solid transparent;
+  transition: var(--transition-theme);
+}
+
+.app-subnav__link:hover {
+  color: var(--color-text-primary);
+}
+
+.app-subnav__link--active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}

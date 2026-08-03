@@ -1,0 +1,14 @@
+<nav class="app-subnav" aria-label="Configuration sections">
+  <div class="app-subnav__inner">
+    <a
+      href="{{ url_for('configuration.current_kits') }}"
+      class="app-subnav__link {% if active_subtab == 'current_kits' %}app-subnav__link--active{% endif %}"
+      {% if active_subtab == 'current_kits' %}aria-current="page"{% endif %}
+    >Current Kits Configuration</a>
+    <a
+      href="{{ url_for('configuration.pqpr_analytics') }}"
+      class="app-subnav__link {% if active_subtab == 'pqpr_analytics' %}app-subnav__link--active{% endif %}"
+      {% if active_subtab == 'pqpr_analytics' %}aria-current="page"{% endif %}
+    >PQPR Analytics</a>
+  </div>
+</nav>
