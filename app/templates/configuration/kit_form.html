@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}{% if kit %}Edit Kit{% else %}Create New Kit{% endif %} — {{ app_name }}{% endblock %}
+
+{% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
+
+{% block content %}
+  <h1>{% if kit %}Edit Kit{% else %}Create New Kit{% endif %}</h1>
+
+  <div
+    id="kit-form"
+    data-create-url="{{ url_for('configuration.current_kits_create') }}"
+    {% if kit %}data-update-url="{{ url_for('configuration.current_kits_update', kit_id=kit.id) }}"{% endif %}
+    data-list-url="{{ url_for('configuration.current_kits') }}"
+    data-kit-id="{{ kit.id if kit else '' }}"
+  >
+    <div class="kit-form__fields">
+      <div class="kit-form__field">
+        <label for="kit-serial-input">Serial Number</label>
+        <input type="number" id="kit-serial-input" min="1" step="1" value="{{ kit.serial_number if kit else '' }}" placeholder="e.g. 1">
+      </div>
+      <div class="kit-form__field">
+        <label for="kit-name-input">Kit Name</label>
+        <input type="text" id="kit-name-input" value="{{ kit.kit_name if kit else '' }}" placeholder="e.g. 1675KIT48">
+      </div>
+      <div class="kit-form__field">
+        <label for="kit-edp-input">EDP Number</label>
+        <input type="text" id="kit-edp-input" value="{{ kit.edp_number if kit else '' }}" placeholder="e.g. 0241276">
+      </div>
+    </div>
+
+    <div class="kit-form__section">
+      <div class="kit-form__section-header">
+        <h2>Parts Configuration</h2>
+        <button type="button" id="add-part-btn" class="btn btn--secondary">Add Part</button>
+      </div>
+      <table class="parts-table" id="parts-table">
+        <thead>
+          <tr>
+            <th>Part Name</th>
+            <th>Qty Required</th>
+            <th>Camera</th>
+            <th>Alert Configuration</th>
+            <th>Class Resemblance</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if kit %}
+            {% for part in kit.parts %}
+              {% include "configuration/_part_row.html" %}
+            {% endfor %}
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="kit-form__section">
+      <div class="kit-form__section-header">
+        <h2>Parts to Neglect</h2>
+        <button type="button" id="add-neglect-btn" class="btn btn--secondary">Add Part</button>
+      </div>
+      <table class="neglect-table" id="neglect-table">
+        <thead>
+          <tr>
+            <th>Part Name</th>
+            <th>Camera</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if kit %}
+            {% for np in kit.neglect_parts %}
+              {% include "configuration/_neglect_row.html" %}
+            {% endfor %}
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="kit-form__actions">
+      <button type="button" id="save-kit-btn" class="btn btn--primary">Save Kit</button>
+      <a href="{{ url_for('configuration.current_kits') }}" class="btn btn--secondary">Cancel</a>
+    </div>
+    <div id="kit-form-status" class="kit-form__status" role="status" aria-live="polite"></div>
+  </div>
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{{ url_for('static', filename='js/kit-form.js') }}"></script>
+{% endblock %}

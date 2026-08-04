@@ -18,6 +18,11 @@ storage:
   pqpr_allowed_extensions: [".xlsx", ".xls"]
   max_upload_size_mb: 20
 
+mongodb:
+  db_name: "kitting_station_v2"
+  collections:
+    current_kits: "current_kit_configurations"
+
 pqpr_parsing:
   sheet_name: "PQPR - FG -- Copy"
   header_row: 1

@@ -43,6 +43,7 @@ def load_settings() -> dict:
     settings["secrets"] = {
         "secret_key": os.environ.get("SECRET_KEY", ""),
         "flask_env": os.environ.get("FLASK_ENV", "production"),
+        "mongo_uri": os.environ.get("MONGO_URI", ""),
     }
 
     _validate_settings(settings)
@@ -65,6 +66,8 @@ def _validate_settings(settings: dict) -> None:
         ("storage", "pqpr_dir"),
         ("storage", "pqpr_allowed_extensions"),
         ("storage", "max_upload_size_mb"),
+        ("mongodb", "db_name"),
+        ("mongodb", "collections", "current_kits"),
         ("pqpr_parsing", "sheet_name"),
         ("pqpr_parsing", "header_row"),
         ("pqpr_parsing", "kit_name_column"),
@@ -90,4 +93,9 @@ def _validate_settings(settings: dict) -> None:
     if not settings["secrets"]["secret_key"]:
         raise ValueError(
             "SECRET_KEY is not set. Copy .env.example to .env and set a value."
+        )
+
+    if not settings["secrets"]["mongo_uri"]:
+        raise ValueError(
+            "MONGO_URI is not set. Add it to .env (e.g. mongodb://localhost:27017/)."
         )

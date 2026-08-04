@@ -12,9 +12,11 @@ from flask import (
     url_for,
 )
 from werkzeug.utils import secure_filename
+from pymongo.errors import PyMongoError
 
 from . import configuration_bp
 from .pqpr_parser import parse_pqpr_workbook
+from . import current_kits_data as kits_data
 
 META_FILENAME = "pqpr_meta.json"
 PARSED_FILENAME = "pqpr_parsed.json"
@@ -96,13 +98,138 @@ def index():
     return redirect(url_for("configuration.pqpr_analytics"))
 
 
+def _kits_collection():
+    settings = current_app.config["SETTINGS"]
+    collection_name = settings["mongodb"]["collections"]["current_kits"]
+    return current_app.config["MONGO_DB"][collection_name]
+
+
 @configuration_bp.route("/configuration/current-kits")
 def current_kits():
+    db_error = None
+    kits = []
+    try:
+        kits = kits_data.list_kits(_kits_collection())
+    except PyMongoError:
+        current_app.logger.exception("Failed to load current kits")
+        db_error = "Could not connect to the database. Is MongoDB running?"
+
     return render_template(
         "configuration/current_kits.html",
         active_page="configuration",
         active_subtab="current_kits",
+        kits=kits,
+        db_error=db_error,
     )
+
+
+@configuration_bp.route("/configuration/current-kits/search")
+def current_kits_search():
+    try:
+        query_text = request.args.get("q", "")
+        kits = kits_data.search_kits(_kits_collection(), query_text)
+        return jsonify({"success": True, "results": kits})
+    except PyMongoError:
+        current_app.logger.exception("current_kits_search failed")
+        return jsonify(
+            {"success": False, "results": [], "error": "Search failed. Is MongoDB running?"}
+        ), 500
+    except Exception:
+        current_app.logger.exception("current_kits_search failed")
+        return jsonify({"success": False, "results": [], "error": "Search failed."}), 500
+
+
+@configuration_bp.route("/configuration/current-kits/new")
+def current_kits_new():
+    return render_template(
+        "configuration/kit_form.html",
+        active_page="configuration",
+        active_subtab="current_kits",
+        kit=None,
+    )
+
+
+@configuration_bp.route("/configuration/current-kits/<kit_id>/edit")
+def current_kits_edit(kit_id):
+    try:
+        kit = kits_data.get_kit(_kits_collection(), kit_id)
+    except kits_data.ValidationError:
+        kit = None
+    except PyMongoError:
+        current_app.logger.exception("Failed to load kit %s for edit", kit_id)
+        kit = None
+
+    if not kit:
+        # Bad id / not found / DB unreachable - no flash-message system
+        # exists yet in this app, so fall back to the list page rather
+        # than a broken edit form.
+        return redirect(url_for("configuration.current_kits"))
+
+    return render_template(
+        "configuration/kit_form.html",
+        active_page="configuration",
+        active_subtab="current_kits",
+        kit=kit,
+    )
+
+
+@configuration_bp.route("/configuration/current-kits/create", methods=["POST"])
+def current_kits_create():
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+        kit_id = kits_data.create_kit(_kits_collection(), payload)
+        return jsonify({"success": True, "id": kit_id})
+    except kits_data.ValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except PyMongoError:
+        current_app.logger.exception("current_kits_create failed")
+        return jsonify(
+            {"success": False, "error": "Could not save kit. Is MongoDB running?"}
+        ), 500
+    except Exception:
+        current_app.logger.exception("current_kits_create failed")
+        return jsonify({"success": False, "error": "Unexpected error saving kit."}), 500
+
+
+@configuration_bp.route(
+    "/configuration/current-kits/<kit_id>/update", methods=["POST"]
+)
+def current_kits_update(kit_id):
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+        kits_data.update_kit(_kits_collection(), kit_id, payload)
+        return jsonify({"success": True})
+    except kits_data.ValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except PyMongoError:
+        current_app.logger.exception("current_kits_update failed")
+        return jsonify(
+            {"success": False, "error": "Could not save kit. Is MongoDB running?"}
+        ), 500
+    except Exception:
+        current_app.logger.exception("current_kits_update failed")
+        return jsonify({"success": False, "error": "Unexpected error saving kit."}), 500
+
+
+@configuration_bp.route(
+    "/configuration/current-kits/<kit_id>/delete", methods=["POST"]
+)
+def current_kits_delete(kit_id):
+    try:
+        kits_data.delete_kit(_kits_collection(), kit_id)
+        return jsonify({"success": True})
+    except kits_data.ValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except PyMongoError:
+        current_app.logger.exception("current_kits_delete failed")
+        return jsonify(
+            {"success": False, "error": "Could not delete kit. Is MongoDB running?"}
+        ), 500
+    except Exception:
+        current_app.logger.exception("current_kits_delete failed")
+        return jsonify(
+            {"success": False, "error": "Unexpected error deleting kit."}
+        ), 500
 
 
 @configuration_bp.route("/configuration/pqpr-analytics")

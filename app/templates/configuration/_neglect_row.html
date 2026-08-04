@@ -1,0 +1,13 @@
+{# Expects `np` in context (a dict) or undefined for a blank row.
+   Row structure is mirrored in static/js/kit-form.js's neglectRowHtml()
+   for rows added client-side - keep both in sync if fields change. #}
+<tr class="neglect-row">
+  <td><input type="text" class="neglect-name-input" value="{{ np.part_name if np is defined and np else '' }}" placeholder="Part name"></td>
+  <td>
+    <select class="neglect-camera-input">
+      <option value="cam1" {% if np is defined and np and np.camera == 'cam1' %}selected{% endif %}>Camera 1</option>
+      <option value="cam2" {% if np is defined and np and np.camera == 'cam2' %}selected{% endif %}>Camera 2</option>
+    </select>
+  </td>
+  <td><button type="button" class="btn btn--danger neglect-delete-btn">Delete</button></td>
+</tr>

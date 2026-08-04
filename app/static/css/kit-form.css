@@ -1,0 +1,137 @@
+.kit-form__fields {
+  display: flex;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+  margin: var(--spacing-lg) 0;
+}
+
+.kit-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  flex: 1;
+  min-width: 220px;
+}
+
+.kit-form__field label {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.kit-form__field input {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  transition: var(--transition-theme);
+}
+
+.kit-form__field input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.kit-form__section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.kit-form__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-sm);
+}
+
+.kit-form__section-header h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.parts-table,
+.neglect-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.parts-table th,
+.parts-table td,
+.neglect-table th,
+.neglect-table td {
+  text-align: left;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.parts-table th,
+.neglect-table th {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.parts-table input[type="text"],
+.parts-table input[type="number"],
+.parts-table select,
+.neglect-table input[type="text"],
+.neglect-table select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  transition: var(--transition-theme);
+}
+
+.parts-table input[type="text"]:focus,
+.parts-table input[type="number"]:focus,
+.parts-table select:focus,
+.neglect-table input[type="text"]:focus,
+.neglect-table select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.parts-table input[type="number"] {
+  width: 70px;
+}
+
+.alert-config-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.alert-config-cell label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.kit-form__actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-lg);
+}
+
+.kit-form__status {
+  font-size: 0.8125rem;
+  min-height: 1.2em;
+  margin-top: var(--spacing-sm);
+}
+
+.kit-form__status--error {
+  color: #e05252;
+}
+
+.kit-form__status--success {
+  color: #3bbf6b;
+}

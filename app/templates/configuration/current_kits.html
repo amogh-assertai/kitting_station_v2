@@ -5,6 +5,54 @@
 {% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
 
 {% block content %}
-  <h1>Current Kits Configuration</h1>
-  <p>Placeholder page. Kit configuration UI will be built in a later task.</p>
+  <div class="kits-table-header">
+    <h1>Current Kits Configuration</h1>
+    {% if not db_error %}
+    <div class="kits-search-box">
+      <input
+        type="text"
+        id="kits-search-input"
+        class="search-box__input"
+        placeholder="Search by kit name, EDP number, or part name..."
+        autocomplete="off"
+      >
+      <span id="kits-search-status" class="kits-search-status" role="status" aria-live="polite"></span>
+    </div>
+    {% endif %}
+    <a href="{{ url_for('configuration.current_kits_new') }}" class="btn btn--primary">Create New Kit</a>
+  </div>
+
+  {% if db_error %}
+    <p class="kits-table__empty">{{ db_error }}</p>
+  {% else %}
+    <table
+      class="kits-table"
+      id="kits-table"
+      data-search-url="{{ url_for('configuration.current_kits_search') }}"
+      data-edit-url-template="{{ url_for('configuration.current_kits_edit', kit_id='__KIT_ID__') }}"
+      data-delete-url-template="{{ url_for('configuration.current_kits_delete', kit_id='__KIT_ID__') }}"
+    >
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Serial No.</th>
+          <th>Kit Name</th>
+          <th>EDP Number</th>
+          <th>Total Parts</th>
+          <th>Last Updated</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="kits-table-body">
+        {% for kit in kits %}
+          {% include "configuration/_kit_row.html" %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <p id="kits-empty-message" class="kits-table__empty" {% if kits %}hidden{% endif %}>No kits configured yet. Click "Create New Kit" to add one.</p>
+  {% endif %}
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{{ url_for('static', filename='js/current-kits.js') }}"></script>
 {% endblock %}

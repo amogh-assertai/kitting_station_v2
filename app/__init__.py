@@ -1,6 +1,7 @@
 from flask import Flask, request
 
 from app.config.loader import load_settings, BASE_DIR
+from app.config.db import init_mongo
 
 
 def create_app():
@@ -14,6 +15,7 @@ def create_app():
         settings["storage"]["max_upload_size_mb"] * 1024 * 1024
     )
 
+    init_mongo(app, settings)
     _register_blueprints(app)
     _register_context_processors(app, settings)
 

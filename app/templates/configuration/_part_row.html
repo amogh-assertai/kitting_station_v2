@@ -1,0 +1,20 @@
+{# Expects `part` in context (a dict) or undefined for a blank row.
+   Row structure is mirrored in static/js/kit-form.js's partRowHtml() for
+   rows added client-side via "Add Part" - keep both in sync if fields change. #}
+<tr class="part-row">
+  <td><input type="text" class="part-name-input" value="{{ part.part_name if part is defined and part else '' }}" placeholder="Part name"></td>
+  <td><input type="number" class="part-qty-input" min="1" value="{{ part.quantity_required if part is defined and part else 1 }}"></td>
+  <td>
+    <select class="part-camera-input">
+      <option value="cam1" {% if part is defined and part and part.camera == 'cam1' %}selected{% endif %}>Camera 1</option>
+      <option value="cam2" {% if part is defined and part and part.camera == 'cam2' %}selected{% endif %}>Camera 2</option>
+    </select>
+  </td>
+  <td class="alert-config-cell">
+    <label><input type="checkbox" class="alert-missing-input" {% if part is defined and part and part.alert_missing %}checked{% endif %}> Missing</label>
+    <label><input type="checkbox" class="alert-undercount-input" {% if part is defined and part and part.alert_undercount %}checked{% endif %}> Undercount</label>
+    <label><input type="checkbox" class="alert-overcount-input" {% if part is defined and part and part.alert_overcount %}checked{% endif %}> Overcount</label>
+  </td>
+  <td><input type="text" class="part-class-resemblance-input" value="{{ part.class_resemblance if part is defined and part else '' }}" placeholder="Optional"></td>
+  <td><button type="button" class="btn btn--danger part-delete-btn">Delete</button></td>
+</tr>
