@@ -1,14 +1,24 @@
-<nav class="app-subnav" aria-label="Configuration sections">
+<nav class="app-subnav" aria-label="{{ table_name }} configuration sections">
   <div class="app-subnav__inner">
     <a
-      href="{{ url_for('configuration.current_kits') }}"
+      href="{{ url_for('configuration.index') }}"
+      class="app-subnav__link app-subnav__link--tables"
+    >&larr; Tables</a>
+    <span class="app-subnav__table-label">{{ table_name }}</span>
+    <a
+      href="{{ url_for('configuration.current_kits', table_id=table_id) }}"
       class="app-subnav__link {% if active_subtab == 'current_kits' %}app-subnav__link--active{% endif %}"
       {% if active_subtab == 'current_kits' %}aria-current="page"{% endif %}
     >Current Kits Configuration</a>
     <a
-      href="{{ url_for('configuration.pqpr_analytics') }}"
+      href="{{ url_for('configuration.pqpr_analytics', table_id=table_id) }}"
       class="app-subnav__link {% if active_subtab == 'pqpr_analytics' %}app-subnav__link--active{% endif %}"
       {% if active_subtab == 'pqpr_analytics' %}aria-current="page"{% endif %}
     >PQPR Analytics</a>
+    <a
+      href="{{ url_for('configuration.table_settings', table_id=table_id) }}"
+      class="app-subnav__link {% if active_subtab == 'table_settings' %}app-subnav__link--active{% endif %}"
+      {% if active_subtab == 'table_settings' %}aria-current="page"{% endif %}
+    >Table Settings</a>
   </div>
 </nav>

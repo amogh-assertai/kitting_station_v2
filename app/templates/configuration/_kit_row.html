@@ -1,5 +1,7 @@
 {# Expects `kit` in context - kit summary dict (id, serial_number, kit_name,
-   edp_number, total_parts, cam1_count, cam2_count, updated_at).
+   edp_number, total_parts, cam1_count, cam2_count, updated_at) - and
+   `table_id` from the including page's context (Jinja includes share the
+   parent's context, so no explicit pass-through needed).
    Mirrored in static/js/current-kits.js's kitRowHtml() for rows rendered
    from search results - keep both in sync if fields change. #}
 <tr data-kit-id="{{ kit.id }}">
@@ -13,11 +15,11 @@
   </td>
   <td class="kit-updated-at" data-updated-at="{{ kit.updated_at }}">{{ kit.updated_at }}</td>
   <td class="kits-table__actions">
-    <a href="{{ url_for('configuration.current_kits_edit', kit_id=kit.id) }}" class="btn btn--secondary">Edit</a>
+    <a href="{{ url_for('configuration.current_kits_edit', table_id=table_id, kit_id=kit.id) }}" class="btn btn--secondary">Edit</a>
     <button
       type="button"
       class="btn btn--danger kit-delete-btn"
-      data-delete-url="{{ url_for('configuration.current_kits_delete', kit_id=kit.id) }}"
+      data-delete-url="{{ url_for('configuration.current_kits_delete', table_id=table_id, kit_id=kit.id) }}"
       data-kit-name="{{ kit.kit_name }}"
     >Delete</button>
   </td>

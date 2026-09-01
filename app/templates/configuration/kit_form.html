@@ -4,14 +4,16 @@
 
 {% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
 
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+
 {% block content %}
   <h1>{% if kit %}Edit Kit{% else %}Create New Kit{% endif %}</h1>
 
   <div
     id="kit-form"
-    data-create-url="{{ url_for('configuration.current_kits_create') }}"
-    {% if kit %}data-update-url="{{ url_for('configuration.current_kits_update', kit_id=kit.id) }}"{% endif %}
-    data-list-url="{{ url_for('configuration.current_kits') }}"
+    data-create-url="{{ url_for('configuration.current_kits_create', table_id=table_id) }}"
+    {% if kit %}data-update-url="{{ url_for('configuration.current_kits_update', table_id=table_id, kit_id=kit.id) }}"{% endif %}
+    data-list-url="{{ url_for('configuration.current_kits', table_id=table_id) }}"
     data-kit-id="{{ kit.id if kit else '' }}"
   >
     <div class="kit-form__fields">
@@ -80,7 +82,7 @@
 
     <div class="kit-form__actions">
       <button type="button" id="save-kit-btn" class="btn btn--primary">Save Kit</button>
-      <a href="{{ url_for('configuration.current_kits') }}" class="btn btn--secondary">Cancel</a>
+      <a href="{{ url_for('configuration.current_kits', table_id=table_id) }}" class="btn btn--secondary">Cancel</a>
     </div>
     <div id="kit-form-status" class="kit-form__status" role="status" aria-live="polite"></div>
   </div>

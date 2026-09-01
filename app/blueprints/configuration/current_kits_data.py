@@ -7,6 +7,8 @@ HTTP <-> these functions.
 
 Document shape (collection: mongodb.collections.current_kits):
 {
+  "table_id": int,          # which table/cell this kit belongs to -
+                             # see `configuration.tables` in config.yaml
   "serial_number": int,
   "kit_name": str,
   "edp_number": str,
@@ -27,6 +29,14 @@ Document shape (collection: mongodb.collections.current_kits):
   "created_at": iso str,
   "updated_at": iso str,
 }
+
+Multi-table note: `serial_number` / `edp_number` uniqueness is scoped
+PER TABLE, not globally - each table is an independent kit configuration,
+so two different tables may legitimately reuse the same serial number.
+
+`table_id` is a required field on every document - existing kit documents
+were backfilled with `table_id: 1` directly in MongoDB, so no fallback
+for a missing field is needed here.
 """
 
 import re
@@ -52,6 +62,15 @@ def _to_object_id(kit_id):
         return ObjectId(kit_id)
     except (InvalidId, TypeError):
         raise ValidationError("Invalid kit id.")
+
+
+def _table_filter(table_id):
+    """Mongo filter fragment scoping a query to one table."""
+    return {"table_id": table_id}
+
+
+def _doc_table_id(doc):
+    return doc.get("table_id")
 
 
 def _validate_part(part, index):
@@ -140,6 +159,7 @@ def _kit_summary(doc):
     cam2_count = sum(1 for p in parts if p.get("camera") == "cam2")
     return {
         "id": str(doc["_id"]),
+        "table_id": _doc_table_id(doc),
         "serial_number": doc.get("serial_number"),
         "kit_name": doc["kit_name"],
         "edp_number": doc["edp_number"],
@@ -150,88 +170,114 @@ def _kit_summary(doc):
     }
 
 
-def list_kits(collection):
-    docs = collection.find().sort("serial_number", 1)
+def list_kits(collection, table_id):
+    docs = collection.find(_table_filter(table_id)).sort("serial_number", 1)
     return [_kit_summary(d) for d in docs]
 
 
-def search_kits(collection, query_text):
+def search_kits(collection, table_id, query_text):
     """Case-insensitive substring match across kit name, EDP number, and
-    part names (nested in the parts array). Empty/blank query returns the
-    full list, same sort as list_kits."""
+    part names (nested in the parts array), scoped to one table. Empty/
+    blank query returns the full list for that table, same sort as
+    list_kits."""
     query_text = (query_text or "").strip()
     if not query_text:
-        return list_kits(collection)
+        return list_kits(collection, table_id)
 
     pattern = re.escape(query_text)
     mongo_query = {
-        "$or": [
-            {"kit_name": {"$regex": pattern, "$options": "i"}},
-            {"edp_number": {"$regex": pattern, "$options": "i"}},
-            {"parts.part_name": {"$regex": pattern, "$options": "i"}},
+        "$and": [
+            _table_filter(table_id),
+            {
+                "$or": [
+                    {"kit_name": {"$regex": pattern, "$options": "i"}},
+                    {"edp_number": {"$regex": pattern, "$options": "i"}},
+                    {"parts.part_name": {"$regex": pattern, "$options": "i"}},
+                ]
+            },
         ]
     }
     docs = collection.find(mongo_query).sort("serial_number", 1)
     return [_kit_summary(d) for d in docs]
 
 
-def get_kit(collection, kit_id):
+def get_kit(collection, kit_id, table_id=None):
+    """Fetch a kit by id. If table_id is given, returns None (not just the
+    raw doc) when the kit belongs to a different table - prevents editing
+    across table boundaries even if a stale/crafted URL is used."""
     doc = collection.find_one({"_id": _to_object_id(kit_id)})
     if not doc:
+        return None
+    if table_id is not None and _doc_table_id(doc) != table_id:
         return None
     doc["id"] = str(doc["_id"])
     return doc
 
 
-def _value_taken(collection, field, value, exclude_object_id=None):
+def _value_taken(collection, field, value, table_id, exclude_object_id=None):
     query = {field: value}
+    query.update(_table_filter(table_id))
     if exclude_object_id is not None:
         query["_id"] = {"$ne": exclude_object_id}
     return collection.find_one(query) is not None
 
 
-def create_kit(collection, payload):
+def create_kit(collection, table_id, payload):
     data = _validate_kit_payload(payload)
-    if _value_taken(collection, "serial_number", data["serial_number"]):
+    if _value_taken(collection, "serial_number", data["serial_number"], table_id):
         raise ValidationError(
-            f'Serial number "{data["serial_number"]}" is already used by another kit.'
+            f'Serial number "{data["serial_number"]}" is already used by another '
+            f"kit on this table."
         )
-    if _value_taken(collection, "edp_number", data["edp_number"]):
+    if _value_taken(collection, "edp_number", data["edp_number"], table_id):
         raise ValidationError(
-            f'EDP number "{data["edp_number"]}" is already used by another kit.'
+            f'EDP number "{data["edp_number"]}" is already used by another kit '
+            f"on this table."
         )
 
     now = _now_iso()
+    data["table_id"] = table_id
     data["created_at"] = now
     data["updated_at"] = now
     result = collection.insert_one(data)
     return str(result.inserted_id)
 
 
-def update_kit(collection, kit_id, payload):
+def update_kit(collection, table_id, kit_id, payload):
     object_id = _to_object_id(kit_id)
+    existing = collection.find_one({"_id": object_id})
+    if not existing or _doc_table_id(existing) != table_id:
+        raise ValidationError("Kit not found.")
+
     data = _validate_kit_payload(payload)
     if _value_taken(
-        collection, "serial_number", data["serial_number"], exclude_object_id=object_id
+        collection, "serial_number", data["serial_number"], table_id, exclude_object_id=object_id
     ):
         raise ValidationError(
-            f'Serial number "{data["serial_number"]}" is already used by another kit.'
+            f'Serial number "{data["serial_number"]}" is already used by another '
+            f"kit on this table."
         )
     if _value_taken(
-        collection, "edp_number", data["edp_number"], exclude_object_id=object_id
+        collection, "edp_number", data["edp_number"], table_id, exclude_object_id=object_id
     ):
         raise ValidationError(
-            f'EDP number "{data["edp_number"]}" is already used by another kit.'
+            f'EDP number "{data["edp_number"]}" is already used by another kit '
+            f"on this table."
         )
 
+    data["table_id"] = table_id
     data["updated_at"] = _now_iso()
     result = collection.update_one({"_id": object_id}, {"$set": data})
     if result.matched_count == 0:
         raise ValidationError("Kit not found.")
 
 
-def delete_kit(collection, kit_id):
+def delete_kit(collection, table_id, kit_id):
     object_id = _to_object_id(kit_id)
+    existing = collection.find_one({"_id": object_id})
+    if not existing or _doc_table_id(existing) != table_id:
+        raise ValidationError("Kit not found.")
+
     result = collection.delete_one({"_id": object_id})
     if result.deleted_count == 0:
         raise ValidationError("Kit not found.")

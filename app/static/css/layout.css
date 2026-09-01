@@ -60,6 +60,17 @@ body {
   transition: var(--transition-theme);
 }
 
+.app-main__top-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.app-main__top-row .back-button {
+  margin-bottom: 0; /* the row now owns the spacing below */
+}
+
 .app-footer {
   border-top: 1px solid var(--color-border);
   background-color: var(--color-surface);

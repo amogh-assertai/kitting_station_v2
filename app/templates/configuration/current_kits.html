@@ -4,6 +4,8 @@
 
 {% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
 
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+
 {% block content %}
   <div class="kits-table-header">
     <h1>Current Kits Configuration</h1>
@@ -19,7 +21,7 @@
       <span id="kits-search-status" class="kits-search-status" role="status" aria-live="polite"></span>
     </div>
     {% endif %}
-    <a href="{{ url_for('configuration.current_kits_new') }}" class="btn btn--primary">Create New Kit</a>
+    <a href="{{ url_for('configuration.current_kits_new', table_id=table_id) }}" class="btn btn--primary">Create New Kit</a>
   </div>
 
   {% if db_error %}
@@ -28,9 +30,9 @@
     <table
       class="kits-table"
       id="kits-table"
-      data-search-url="{{ url_for('configuration.current_kits_search') }}"
-      data-edit-url-template="{{ url_for('configuration.current_kits_edit', kit_id='__KIT_ID__') }}"
-      data-delete-url-template="{{ url_for('configuration.current_kits_delete', kit_id='__KIT_ID__') }}"
+      data-search-url="{{ url_for('configuration.current_kits_search', table_id=table_id) }}"
+      data-edit-url-template="{{ url_for('configuration.current_kits_edit', table_id=table_id, kit_id='__KIT_ID__') }}"
+      data-delete-url-template="{{ url_for('configuration.current_kits_delete', table_id=table_id, kit_id='__KIT_ID__') }}"
     >
       <thead>
         <tr>

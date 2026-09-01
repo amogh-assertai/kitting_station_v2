@@ -89,13 +89,16 @@
   {% block subnav %}{% endblock %}
 
   <main class="app-main">
-    <button
-      type="button"
-      id="back-button"
-      class="back-button"
-      aria-label="Go back"
-      data-fallback-url="{{ url_for('home.index') }}"
-    ><span aria-hidden="true">&larr;</span> Back</button>
+    <div class="app-main__top-row">
+      <button
+        type="button"
+        id="back-button"
+        class="back-button"
+        aria-label="Go back"
+        data-fallback-url="{{ url_for('home.index') }}"
+      ><span aria-hidden="true">&larr;</span> Back</button>
+      {% block table_badge %}{% endblock %}
+    </div>
     {% block content %}{% endblock %}
   </main>
 

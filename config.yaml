@@ -17,11 +17,14 @@ storage:
   pqpr_dir: "data/pqpr"
   pqpr_allowed_extensions: [".xlsx", ".xls"]
   max_upload_size_mb: 20
+  audio_dir: "data/audio"
+  audio_allowed_extensions: [".mp3"]
 
 mongodb:
   db_name: "kitting_station_v2"
   collections:
     current_kits: "current_kit_configurations"
+    table_configuration: "table_configuration"
 
 pqpr_parsing:
   sheet_name: "PQPR - FG -- Copy"
@@ -30,6 +33,23 @@ pqpr_parsing:
   edp_column: "C"
   component_start_column: "H"
   top10_row_count: 10
+
+# Tables (kitting stations/cells) this app can be configured for. table_id
+# is the stable reference used throughout routes, MongoDB documents, and
+# PQPR file storage - not hardcoded, so adding table 4/5 later is a config
+# change, not a code change. `built` gates whether a table shows its real
+# Current Kits/PQPR configuration or a "not yet built" placeholder.
+configuration:
+  tables:
+    - id: 1
+      name: "HVGKC-CELL"
+      built: true
+    - id: 2
+      name: "Truck Cell 1"
+      built: false
+    - id: 3
+      name: "Truck Cell 2"
+      built: false
 
 theme:
   default: "dark"

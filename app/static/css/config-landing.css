@@ -1,0 +1,71 @@
+/* Table-selection landing page + unbuilt-table placeholder.
+   Loaded via {% block extra_css %} only on the pages that need it -
+   same per-page-asset pattern already used for JS files (pqpr-upload.js,
+   kit-form.js, etc.), rather than adding to the global link chain in
+   base.html for a page-specific concern. */
+
+.config-landing__subtitle {
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+  margin: var(--spacing-xs) 0 var(--spacing-lg);
+}
+
+.config-landing__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.config-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  transition: var(--transition-theme), transform 0.15s ease;
+}
+
+.config-card:hover {
+  border-color: var(--color-accent);
+  transform: translateY(-2px);
+}
+
+.config-card:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.config-card__id {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.config-card__name {
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.config-card__status {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.config-card--unbuilt {
+  opacity: 0.7;
+}
+
+.config-card--unbuilt:hover {
+  border-color: var(--color-border);
+  transform: none;
+}
+
+.config-landing__placeholder {
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+}

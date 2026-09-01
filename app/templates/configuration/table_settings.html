@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}Table Settings — {{ app_name }}{% endblock %}
+
+{% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
+
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/table-settings.css') }}">
+{% endblock %}
+
+{% block content %}
+  <h1>Table Settings</h1>
+
+  <section class="table-settings__section">
+    <h2>Audio Settings</h2>
+    <table
+      class="audio-settings-table"
+      id="audio-settings-table"
+      data-save-url="{{ url_for('configuration.table_settings_audio_save', table_id=table_id) }}"
+    >
+      <thead>
+        <tr>
+          <th>Audio</th>
+          <th>File</th>
+          <th>Preview</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in audio_rows %}
+        <tr data-slot-id="{{ row.id }}">
+          <td>{{ row.label }}</td>
+          <td>
+            <div class="audio-file-cell">
+              <span class="audio-file-cell__name" id="audio-filename-{{ row.id }}">
+                {{ row.original_filename or "No file uploaded" }}
+              </span>
+              <label class="btn btn--secondary" for="audio-input-{{ row.id }}">
+                {% if row.original_filename %}Replace{% else %}Upload{% endif %}
+                <input type="file" id="audio-input-{{ row.id }}" class="audio-file-input" accept=".mp3" hidden>
+              </label>
+            </div>
+          </td>
+          <td>
+            <button
+              type="button"
+              class="btn btn--secondary audio-preview-btn"
+              id="audio-preview-{{ row.id }}"
+              data-audio-url="{{ url_for('configuration.table_settings_audio_file', table_id=table_id, slot_id=row.id) }}"
+              {% if not row.original_filename %}disabled{% endif %}
+            >&#9654; Play</button>
+            <audio id="audio-player-{{ row.id }}" preload="none"></audio>
+          </td>
+          <td>
+            <label class="radio-option">
+              <input type="radio" name="default-{{ row.id }}" value="enabled" {% if row.default_enabled %}checked{% endif %}> Enabled
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="default-{{ row.id }}" value="disabled" {% if not row.default_enabled %}checked{% endif %}> Disabled
+            </label>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="table-settings__actions">
+      <button type="button" id="save-audio-settings-btn" class="btn btn--primary">Save Audio Settings</button>
+    </div>
+    <div id="audio-settings-status" class="table-settings__status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="table-settings__section">
+    <h2>Expected Client IP Addresses</h2>
+    <div
+      id="ip-list-widget"
+      data-save-url="{{ url_for('configuration.table_settings_ips_save', table_id=table_id) }}"
+      data-initial-ips='{{ expected_ips | tojson }}'
+    >
+      <table class="ip-list-table" id="ip-list-table">
+        <thead>
+          <tr>
+            <th>IP Address</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ip-list-table-body"></tbody>
+      </table>
+      <div class="ip-list__add-row">
+        <input type="text" id="ip-new-input" placeholder="e.g. 10.0.0.5" autocomplete="off">
+        <button type="button" id="ip-add-btn" class="btn btn--secondary">Add IP</button>
+      </div>
+      <div class="table-settings__actions">
+        <button type="button" id="save-ip-list-btn" class="btn btn--primary">Save IP List</button>
+      </div>
+      <div id="ip-list-status" class="table-settings__status" role="status" aria-live="polite"></div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{{ url_for('static', filename='js/table-settings.js') }}"></script>
+{% endblock %}

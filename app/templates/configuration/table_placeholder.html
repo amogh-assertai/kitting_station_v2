@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}{{ table.name }} — Configuration — {{ app_name }}{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/config-landing.css') }}">
+{% endblock %}
+
+{% block content %}
+  <h1>{{ table.name }}</h1>
+  <p class="config-landing__placeholder">Configuration for {{ table.name }} not yet built.</p>
+{% endblock %}

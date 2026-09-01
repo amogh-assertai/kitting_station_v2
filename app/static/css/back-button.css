@@ -21,3 +21,17 @@
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* Table id + name badge, shown next to the back button on table-scoped
+   Configuration pages (Current Kits Configuration, PQPR Analytics). */
+.table-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background-color: var(--color-accent-hover-bg);
+}

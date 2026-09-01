@@ -1,0 +1,117 @@
+.table-settings__section {
+  margin-bottom: var(--spacing-xl);
+}
+
+.table-settings__section h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: var(--spacing-md);
+}
+
+.audio-settings-table,
+.ip-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  margin-bottom: var(--spacing-md);
+}
+
+.audio-settings-table th,
+.audio-settings-table td,
+.ip-list-table th,
+.ip-list-table td {
+  text-align: left;
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.audio-settings-table th,
+.ip-list-table th {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.audio-file-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.audio-file-cell__name {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.radio-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: var(--spacing-md);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.table-settings__actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.table-settings__status {
+  font-size: 0.8125rem;
+  min-height: 1.2em;
+  margin-top: var(--spacing-sm);
+}
+
+.table-settings__status--error {
+  color: #e05252;
+}
+
+.table-settings__status--success {
+  color: #3bbf6b;
+}
+
+.ip-list__add-row {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+  max-width: 400px;
+}
+
+.ip-list__add-row input {
+  flex: 1;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+  transition: var(--transition-theme);
+}
+
+.ip-list__add-row input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.ip-edit-input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  transition: var(--transition-theme);
+}
+
+.ip-edit-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.ip-list__empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}

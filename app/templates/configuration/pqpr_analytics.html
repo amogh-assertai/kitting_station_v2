@@ -4,12 +4,14 @@
 
 {% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}
 
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+
 {% block content %}
   <div
     id="pqpr-upload-widget"
     class="upload-widget"
-    data-upload-url="{{ url_for('configuration.pqpr_upload') }}"
-    data-download-url="{{ url_for('configuration.pqpr_download') }}"
+    data-upload-url="{{ url_for('configuration.pqpr_upload', table_id=table_id) }}"
+    data-download-url="{{ url_for('configuration.pqpr_download', table_id=table_id) }}"
   >
     <div class="upload-widget__info">
       {% if pqpr_meta %}
@@ -49,10 +51,10 @@
   <div
     id="pqpr-search-panels"
     class="split-panels"
-    data-search-kits-url="{{ url_for('configuration.pqpr_search_kits') }}"
-    data-kit-details-url="{{ url_for('configuration.pqpr_kit_details') }}"
-    data-search-components-url="{{ url_for('configuration.pqpr_search_components') }}"
-    data-component-details-url="{{ url_for('configuration.pqpr_component_details') }}"
+    data-search-kits-url="{{ url_for('configuration.pqpr_search_kits', table_id=table_id) }}"
+    data-kit-details-url="{{ url_for('configuration.pqpr_kit_details', table_id=table_id) }}"
+    data-search-components-url="{{ url_for('configuration.pqpr_search_components', table_id=table_id) }}"
+    data-component-details-url="{{ url_for('configuration.pqpr_component_details', table_id=table_id) }}"
     {% if not pqpr_meta %}hidden{% endif %}
   >
     <section class="split-panel">

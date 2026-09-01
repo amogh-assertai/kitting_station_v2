@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Configuration — {{ app_name }}{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/config-landing.css') }}">
+{% endblock %}
+
+{% block content %}
+  <h1>Configuration</h1>
+  <p class="config-landing__subtitle">Choose a table to configure.</p>
+
+  <div class="config-landing__grid">
+    {% for table in tables %}
+      <a
+        href="{{ url_for('configuration.configuration_table', table_id=table.id) }}"
+        class="config-card {% if not table.built %}config-card--unbuilt{% endif %}"
+      >
+        <span class="config-card__id">Table {{ table.id }}</span>
+        <span class="config-card__name">{{ table.name }}</span>
+        {% if not table.built %}
+          <span class="config-card__status">Not yet configured</span>
+        {% endif %}
+      </a>
+    {% endfor %}
+  </div>
+{% endblock %}
