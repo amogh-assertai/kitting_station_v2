@@ -258,8 +258,138 @@
     });
   }
 
+  // --- Push Notification Settings (emails + notification toggles) -------
+  //
+  // Emails are staged locally (same add/edit/delete pattern as the IP
+  // list). Emails and the 4 notification toggles share ONE Save button -
+  // one cohesive feature, not two separate saves.
+
+  function initPushNotifications() {
+    const widget = document.getElementById("push-notifications-widget");
+    if (!widget) return;
+
+    const saveUrl = widget.dataset.saveUrl;
+    let emails = [];
+    try {
+      emails = JSON.parse(widget.dataset.initialEmails || "[]");
+    } catch (e) {
+      emails = [];
+    }
+
+    const tbody = document.getElementById("email-list-table-body");
+    const newInput = document.getElementById("email-new-input");
+    const addBtn = document.getElementById("email-add-btn");
+    const saveBtn = document.getElementById("save-push-notifications-btn");
+    const statusEl = document.getElementById("push-notifications-status");
+    const notificationTable = document.getElementById("notification-settings-table");
+
+    function renderEmails() {
+      if (emails.length === 0) {
+        tbody.innerHTML =
+          '<tr><td colspan="2" class="ip-list__empty">No notification emails configured yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = emails
+        .map(function (email, index) {
+          return (
+            '<tr data-index="' + index + '">' +
+            '<td><input type="text" class="ip-edit-input" value="' + escapeHtml(email) + '"></td>' +
+            '<td><button type="button" class="btn btn--danger email-delete-btn">Delete</button></td>' +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+
+    renderEmails();
+
+    addBtn.addEventListener("click", function () {
+      const value = newInput.value.trim();
+      if (!value) return;
+      emails.push(value);
+      newInput.value = "";
+      renderEmails();
+      newInput.focus();
+    });
+
+    newInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addBtn.click();
+      }
+    });
+
+    tbody.addEventListener("click", function (e) {
+      const btn = e.target.closest(".email-delete-btn");
+      if (!btn) return;
+      const row = btn.closest("tr");
+      const index = parseInt(row.dataset.index, 10);
+      emails.splice(index, 1);
+      renderEmails();
+    });
+
+    tbody.addEventListener("input", function (e) {
+      if (!e.target.classList.contains("ip-edit-input")) return;
+      const row = e.target.closest("tr");
+      const index = parseInt(row.dataset.index, 10);
+      emails[index] = e.target.value;
+    });
+
+    // Threshold input for a notification type follows its own row's
+    // enabled/disabled radio - only meaningful (and only enabled in the
+    // UI) when that notification is turned on.
+    if (notificationTable) {
+      notificationTable.querySelectorAll("tbody tr").forEach(function (row) {
+        const notifId = row.dataset.notificationId;
+        const thresholdInput = document.getElementById("threshold-" + notifId);
+        if (!thresholdInput) return;
+
+        row.addEventListener("change", function (e) {
+          if (e.target.name !== "notif-" + notifId) return;
+          thresholdInput.disabled = e.target.value !== "enabled";
+        });
+      });
+    }
+
+    if (!saveBtn) return;
+
+    saveBtn.addEventListener("click", function () {
+      const notifications = {};
+      if (notificationTable) {
+        notificationTable.querySelectorAll("tbody tr").forEach(function (row) {
+          const notifId = row.dataset.notificationId;
+          const checked = row.querySelector('input[name="notif-' + notifId + '"]:checked');
+          const enabled = checked ? checked.value === "enabled" : false;
+          const entry = { enabled: enabled };
+
+          const thresholdInput = document.getElementById("threshold-" + notifId);
+          if (thresholdInput) {
+            entry.threshold_percent =
+              thresholdInput.value === "" ? null : parseFloat(thresholdInput.value);
+          }
+          notifications[notifId] = entry;
+        });
+      }
+
+      setStatus(statusEl, "Saving...", null);
+      saveBtn.disabled = true;
+
+      postJson(saveUrl, { emails: emails, notifications: notifications }).then(function (result) {
+        saveBtn.disabled = false;
+        if (!result.ok || !result.data.success) {
+          setStatus(statusEl, (result.data && result.data.error) || "Could not save.", "error");
+          return;
+        }
+        emails = result.data.emails || [];
+        renderEmails();
+        setStatus(statusEl, "Push notification settings saved.", "success");
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     initAudioSettings();
     initIpList();
+    initPushNotifications();
   });
 })();

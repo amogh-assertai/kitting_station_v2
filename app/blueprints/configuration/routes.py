@@ -610,6 +610,8 @@ def table_settings(table_id):
     config_doc = table_settings_data.get_table_config(_table_config_collection(), table_id)
     audio_settings = config_doc.get("audio_settings", {})
     expected_ips = config_doc.get("expected_client_ips", [])
+    push_notification_emails = config_doc.get("push_notification_emails", [])
+    push_notifications = config_doc.get("push_notifications", {})
 
     audio_rows = []
     for slot in table_settings_data.AUDIO_SLOTS:
@@ -626,6 +628,21 @@ def table_settings(table_id):
             }
         )
 
+    notification_rows = []
+    for ntype in table_settings_data.NOTIFICATION_TYPES:
+        entry = push_notifications.get(ntype["id"], {})
+        notification_rows.append(
+            {
+                "id": ntype["id"],
+                "label": ntype["label"],
+                "has_threshold": ntype["has_threshold"],
+                "enabled": entry.get(
+                    "enabled", table_settings_data.NOTIFICATION_DEFAULT_ENABLED
+                ),
+                "threshold_percent": entry.get("threshold_percent"),
+            }
+        )
+
     return render_template(
         "configuration/table_settings.html",
         active_page="configuration",
@@ -634,6 +651,8 @@ def table_settings(table_id):
         table_name=table["name"],
         audio_rows=audio_rows,
         expected_ips=expected_ips,
+        notification_rows=notification_rows,
+        push_notification_emails=push_notification_emails,
     )
 
 
@@ -745,4 +764,36 @@ def table_settings_ips_save(table_id):
         current_app.logger.exception("table_settings_ips_save failed")
         return jsonify(
             {"success": False, "error": "Unexpected error saving IP list."}
+        ), 500
+
+
+@configuration_bp.route(
+    "/configuration/table/<int:table_id>/table-settings/push-notifications/save",
+    methods=["POST"],
+)
+def table_settings_push_notifications_save(table_id):
+    _require_built_table(table_id)
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+        emails = payload.get("emails")
+        notifications = payload.get("notifications")
+
+        if not isinstance(emails, list) or not isinstance(notifications, dict):
+            return jsonify({"success": False, "error": "Invalid payload."}), 400
+
+        result = table_settings_data.save_push_notifications(
+            _table_config_collection(), table_id, emails, notifications
+        )
+        return jsonify({"success": True, "emails": result["emails"], "notifications": result["notifications"]})
+    except table_settings_data.ValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except PyMongoError:
+        current_app.logger.exception("table_settings_push_notifications_save failed")
+        return jsonify(
+            {"success": False, "error": "Could not save. Is MongoDB running?"}
+        ), 500
+    except Exception:
+        current_app.logger.exception("table_settings_push_notifications_save failed")
+        return jsonify(
+            {"success": False, "error": "Unexpected error saving push notification settings."}
         ), 500

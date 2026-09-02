@@ -53,6 +53,38 @@ _AUDIO_SLOT_IDS = {slot["id"] for slot in AUDIO_SLOTS}
 # defaults to Enabled.
 DEFAULT_ENABLED = True
 
+# Fixed set of push notification types, same enum pattern as AUDIO_SLOTS.
+# `has_threshold` marks the one type (error rate) that carries an extra
+# percent value alongside its enabled/disabled state.
+NOTIFICATION_TYPES = [
+    {
+        "id": "start_stop_events_notification",
+        "label": "Start/Stop Events Notification",
+        "has_threshold": False,
+    },
+    {
+        "id": "error_rate_threshold_notification",
+        "label": "Error Rate Threshold Notification",
+        "has_threshold": True,
+    },
+    {
+        "id": "continuous_object_detected_notification",
+        "label": "Continuous Object Detected Notification",
+        "has_threshold": False,
+    },
+    {
+        "id": "activity_creation_error_notification",
+        "label": "Activity Creation Error Notification",
+        "has_threshold": False,
+    },
+]
+
+_NOTIFICATION_TYPE_BY_ID = {n["id"]: n for n in NOTIFICATION_TYPES}
+
+# Unlike audio slots, notifications default to Disabled (client's explicit
+# choice for this feature).
+NOTIFICATION_DEFAULT_ENABLED = False
+
 
 class ValidationError(Exception):
     """Raised on bad input - caught in routes.py and turned into a 400
@@ -73,6 +105,8 @@ def get_table_config(collection, table_id):
             "table_id": table_id,
             "audio_settings": {},
             "expected_client_ips": [],
+            "push_notification_emails": [],
+            "push_notifications": {},
         }
     return doc
 
@@ -145,3 +179,89 @@ def save_expected_ips(collection, table_id, ips):
         upsert=True,
     )
     return cleaned
+
+
+def _clean_string_list(values):
+    """Trim, drop blanks, dedupe while preserving order - shared logic
+    between expected_client_ips and push_notification_emails. No format
+    validation (client's explicit choice for both lists)."""
+    cleaned = []
+    seen = set()
+    for value in values or []:
+        value = (value or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+    return cleaned
+
+
+def _validate_notifications(notifications):
+    """Normalizes to exactly one entry per known notification type,
+    defaulting missing/malformed entries to Disabled. The threshold
+    percent on error_rate_threshold_notification is required (0-100) only
+    when that notification is enabled."""
+    notifications = notifications or {}
+    result = {}
+    for ntype in NOTIFICATION_TYPES:
+        nid = ntype["id"]
+        entry = notifications.get(nid) or {}
+        enabled = bool(entry.get("enabled", NOTIFICATION_DEFAULT_ENABLED))
+        normalized = {"enabled": enabled}
+
+        if ntype["has_threshold"]:
+            raw_threshold = entry.get("threshold_percent")
+            if enabled:
+                try:
+                    threshold = float(raw_threshold)
+                except (TypeError, ValueError):
+                    raise ValidationError(
+                        f'"{ntype["label"]}" is enabled but no valid threshold '
+                        f"percent was provided."
+                    )
+                if threshold < 0 or threshold > 100:
+                    raise ValidationError(
+                        f'"{ntype["label"]}": threshold percent must be between 0 and 100.'
+                    )
+            else:
+                # Not enabled - keep a previously-set value if present and
+                # parseable, otherwise None. No strict validation while
+                # disabled.
+                try:
+                    threshold = (
+                        float(raw_threshold) if raw_threshold not in (None, "") else None
+                    )
+                except (TypeError, ValueError):
+                    threshold = None
+            normalized["threshold_percent"] = threshold
+
+        result[nid] = normalized
+
+    return result
+
+
+def save_push_notifications(collection, table_id, emails, notifications):
+    """Replaces the emails list and the notification settings atomically."""
+    cleaned_emails = _clean_string_list(emails)
+    normalized_notifications = _validate_notifications(notifications)
+
+    existing = collection.find_one({"table_id": table_id}) or {}
+    now = _now_iso()
+    collection.update_one(
+        {"table_id": table_id},
+        {
+            "$set": {
+                "push_notification_emails": cleaned_emails,
+                "push_notifications": normalized_notifications,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "table_id": table_id,
+                "created_at": now,
+                "audio_settings": existing.get("audio_settings", {}),
+                "expected_client_ips": existing.get("expected_client_ips", []),
+            },
+        },
+        upsert=True,
+    )
+    return {"emails": cleaned_emails, "notifications": normalized_notifications}

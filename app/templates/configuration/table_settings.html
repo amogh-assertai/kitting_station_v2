@@ -97,6 +97,76 @@
       <div id="ip-list-status" class="table-settings__status" role="status" aria-live="polite"></div>
     </div>
   </section>
+
+  <section class="table-settings__section">
+    <h2>Push Notification Settings</h2>
+    <div
+      id="push-notifications-widget"
+      data-save-url="{{ url_for('configuration.table_settings_push_notifications_save', table_id=table_id) }}"
+      data-initial-emails='{{ push_notification_emails | tojson }}'
+    >
+      <h3 class="table-settings__subheading">Notification Emails</h3>
+      <table class="ip-list-table" id="email-list-table">
+        <thead>
+          <tr>
+            <th>Email Address</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="email-list-table-body"></tbody>
+      </table>
+      <div class="ip-list__add-row">
+        <input type="text" id="email-new-input" placeholder="e.g. ops@dormont.com" autocomplete="off">
+        <button type="button" id="email-add-btn" class="btn btn--secondary">Add Email</button>
+      </div>
+
+      <h3 class="table-settings__subheading">Notification Types</h3>
+      <table class="notification-settings-table" id="notification-settings-table">
+        <thead>
+          <tr>
+            <th>Notification</th>
+            <th>Default</th>
+            <th>Threshold %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in notification_rows %}
+          <tr data-notification-id="{{ row.id }}">
+            <td>{{ row.label }}</td>
+            <td>
+              <label class="radio-option">
+                <input type="radio" name="notif-{{ row.id }}" value="enabled" {% if row.enabled %}checked{% endif %}> Enabled
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="notif-{{ row.id }}" value="disabled" {% if not row.enabled %}checked{% endif %}> Disabled
+              </label>
+            </td>
+            <td>
+              {% if row.has_threshold %}
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  class="threshold-input"
+                  id="threshold-{{ row.id }}"
+                  value="{{ row.threshold_percent if row.threshold_percent is not none else '' }}"
+                  placeholder="e.g. 15"
+                  {% if not row.enabled %}disabled{% endif %}
+                > %
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="table-settings__actions">
+        <button type="button" id="save-push-notifications-btn" class="btn btn--primary">Save Push Notification Settings</button>
+      </div>
+      <div id="push-notifications-status" class="table-settings__status" role="status" aria-live="polite"></div>
+    </div>
+  </section>
 {% endblock %}
 
 {% block extra_js %}

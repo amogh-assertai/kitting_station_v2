@@ -8,6 +8,33 @@
   margin-bottom: var(--spacing-md);
 }
 
+.table-settings__subheading {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: var(--spacing-md) 0 var(--spacing-sm);
+}
+
+.threshold-input {
+  width: 70px;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  transition: var(--transition-theme);
+}
+
+.threshold-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.threshold-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .audio-settings-table,
 .ip-list-table {
   width: 100%;
