@@ -281,6 +281,29 @@ def current_kits_search(table_id):
         return jsonify({"success": False, "results": [], "error": "Search failed."}), 500
 
 
+def _camera_alert_rows(kit):
+    """Builds the 2-row (cam1, cam2) view model for the Camera Alert
+    Configuration table on the kit form - defaults both alerts to Enabled
+    for a new kit or for a camera with no stored entry yet."""
+    by_camera = {}
+    if kit:
+        for entry in kit.get("camerawise_alert_config", []):
+            by_camera[entry.get("camera")] = entry
+
+    rows = []
+    for camera, label in (("cam1", "Camera 1"), ("cam2", "Camera 2")):
+        entry = by_camera.get(camera, {})
+        rows.append(
+            {
+                "camera": camera,
+                "label": label,
+                "alert_validation_error": entry.get("alert_validation_error", True),
+                "alert_wrong_part_error": entry.get("alert_wrong_part_error", True),
+            }
+        )
+    return rows
+
+
 @configuration_bp.route("/configuration/table/<int:table_id>/current-kits/new")
 def current_kits_new(table_id):
     table = _require_built_table(table_id)
@@ -291,6 +314,7 @@ def current_kits_new(table_id):
         table_id=table_id,
         table_name=table["name"],
         kit=None,
+        camera_alert_rows=_camera_alert_rows(None),
     )
 
 
@@ -317,6 +341,7 @@ def current_kits_edit(table_id, kit_id):
         table_id=table_id,
         table_name=table["name"],
         kit=kit,
+        camera_alert_rows=_camera_alert_rows(kit),
     )
 
 

@@ -2,7 +2,7 @@ app:
   name: "Kitting Station"
   version: "2.0"
   host: "0.0.0.0"
-  port: 5000
+  port: 7000
   debug: true
 
 client:

@@ -80,6 +80,44 @@
       </table>
     </div>
 
+    <div class="kit-form__section">
+      <div class="kit-form__section-header">
+        <h2>Camera Alert Configuration</h2>
+      </div>
+      <table class="camera-alert-table" id="camera-alert-table">
+        <thead>
+          <tr>
+            <th>Camera</th>
+            <th>Validation Error Alert</th>
+            <th>Wrong Part Error Alert</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in camera_alert_rows %}
+          <tr data-camera="{{ row.camera }}">
+            <td>{{ row.label }}</td>
+            <td>
+              <label class="radio-option">
+                <input type="radio" name="alert-validation-{{ row.camera }}" value="enabled" {% if row.alert_validation_error %}checked{% endif %}> Enabled
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="alert-validation-{{ row.camera }}" value="disabled" {% if not row.alert_validation_error %}checked{% endif %}> Disabled
+              </label>
+            </td>
+            <td>
+              <label class="radio-option">
+                <input type="radio" name="alert-wrongpart-{{ row.camera }}" value="enabled" {% if row.alert_wrong_part_error %}checked{% endif %}> Enabled
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="alert-wrongpart-{{ row.camera }}" value="disabled" {% if not row.alert_wrong_part_error %}checked{% endif %}> Disabled
+              </label>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
     <div class="kit-form__actions">
       <button type="button" id="save-kit-btn" class="btn btn--primary">Save Kit</button>
       <a href="{{ url_for('configuration.current_kits', table_id=table_id) }}" class="btn btn--secondary">Cancel</a>

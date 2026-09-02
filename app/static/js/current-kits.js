@@ -60,6 +60,13 @@
       " · Cam2: " +
       escapeHtml(kit.cam2_count) +
       "</span></td>" +
+      "<td>" +
+      escapeHtml(kit.total_neglect_parts) +
+      '<span class="kits-table__sub">Cam1: ' +
+      escapeHtml(kit.neglect_cam1_count) +
+      " · Cam2: " +
+      escapeHtml(kit.neglect_cam2_count) +
+      "</span></td>" +
       '<td class="kit-updated-at" data-updated-at="' +
       escapeHtml(kit.updated_at) +
       '">' +

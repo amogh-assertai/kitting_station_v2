@@ -79,6 +79,26 @@
     return neglectParts;
   }
 
+  function collectCameraAlertConfig(table) {
+    if (!table) return [];
+    const config = [];
+    table.querySelectorAll("tbody tr").forEach(function (row) {
+      const camera = row.dataset.camera;
+      const validationChecked = row.querySelector(
+        'input[name="alert-validation-' + camera + '"]:checked'
+      );
+      const wrongPartChecked = row.querySelector(
+        'input[name="alert-wrongpart-' + camera + '"]:checked'
+      );
+      config.push({
+        camera: camera,
+        alert_validation_error: validationChecked ? validationChecked.value === "enabled" : true,
+        alert_wrong_part_error: wrongPartChecked ? wrongPartChecked.value === "enabled" : true,
+      });
+    });
+    return config;
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const form = document.getElementById("kit-form");
     if (!form) return;
@@ -93,6 +113,7 @@
     const kitEdpInput = document.getElementById("kit-edp-input");
     const partsTableBody = document.querySelector("#parts-table tbody");
     const neglectTableBody = document.querySelector("#neglect-table tbody");
+    const cameraAlertTable = document.getElementById("camera-alert-table");
     const statusEl = document.getElementById("kit-form-status");
 
     document.getElementById("add-part-btn").addEventListener("click", function () {
@@ -131,6 +152,7 @@
         edp_number: edpNumber,
         parts: collectParts(partsTableBody),
         neglect_parts: collectNeglectParts(neglectTableBody),
+        camerawise_alert_config: collectCameraAlertConfig(cameraAlertTable),
       };
 
       const url = kitId ? updateUrl : createUrl;

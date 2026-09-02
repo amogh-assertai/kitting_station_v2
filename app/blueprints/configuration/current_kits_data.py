@@ -120,6 +120,43 @@ def _validate_neglect_part(part, index):
     return {"part_name": name, "camera": camera}
 
 
+# Default for an alert when a kit doesn't specify one yet (new kit, or a
+# camera missing from the payload) - matches the form's pre-checked radio.
+_DEFAULT_ALERT_ENABLED = True
+
+
+def _validate_camera_alert_config(payload):
+    """Normalizes camerawise_alert_config to exactly one entry per camera
+    (cam1, cam2), in that order, regardless of what the payload contains -
+    defends against a payload built outside the UI (missing/duplicate/
+    out-of-order camera entries)."""
+    entries = payload.get("camerawise_alert_config") or []
+    by_camera = {}
+    for entry in entries:
+        camera = entry.get("camera")
+        if camera not in ALLOWED_CAMERAS:
+            raise ValidationError(
+                f'Camera alert configuration: camera must be Camera 1 or Camera 2 (got "{camera}").'
+            )
+        by_camera[camera] = {
+            "camera": camera,
+            "alert_validation_error": bool(entry.get("alert_validation_error")),
+            "alert_wrong_part_error": bool(entry.get("alert_wrong_part_error")),
+        }
+
+    return [
+        by_camera.get(
+            camera,
+            {
+                "camera": camera,
+                "alert_validation_error": _DEFAULT_ALERT_ENABLED,
+                "alert_wrong_part_error": _DEFAULT_ALERT_ENABLED,
+            },
+        )
+        for camera in ALLOWED_CAMERAS
+    ]
+
+
 def _validate_kit_payload(payload):
     try:
         serial_number = int(payload.get("serial_number"))
@@ -141,6 +178,7 @@ def _validate_kit_payload(payload):
         _validate_neglect_part(p, i)
         for i, p in enumerate(payload.get("neglect_parts") or [])
     ]
+    camerawise_alert_config = _validate_camera_alert_config(payload)
 
     return {
         "serial_number": serial_number,
@@ -148,15 +186,22 @@ def _validate_kit_payload(payload):
         "edp_number": edp_number,
         "parts": parts,
         "neglect_parts": neglect_parts,
+        "camerawise_alert_config": camerawise_alert_config,
     }
 
 
 def _kit_summary(doc):
     """Shape used for the list table - total parts + per-camera counts
-    are derived from the parts array, not stored redundantly."""
+    are derived from the parts array, not stored redundantly. Same for
+    the neglect-parts counts."""
     parts = doc.get("parts", [])
     cam1_count = sum(1 for p in parts if p.get("camera") == "cam1")
     cam2_count = sum(1 for p in parts if p.get("camera") == "cam2")
+
+    neglect_parts = doc.get("neglect_parts", [])
+    neglect_cam1_count = sum(1 for p in neglect_parts if p.get("camera") == "cam1")
+    neglect_cam2_count = sum(1 for p in neglect_parts if p.get("camera") == "cam2")
+
     return {
         "id": str(doc["_id"]),
         "table_id": _doc_table_id(doc),
@@ -166,6 +211,9 @@ def _kit_summary(doc):
         "total_parts": len(parts),
         "cam1_count": cam1_count,
         "cam2_count": cam2_count,
+        "total_neglect_parts": len(neglect_parts),
+        "neglect_cam1_count": neglect_cam1_count,
+        "neglect_cam2_count": neglect_cam2_count,
         "updated_at": doc.get("updated_at"),
     }
 

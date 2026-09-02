@@ -13,6 +13,10 @@
     {{ kit.total_parts }}
     <span class="kits-table__sub">Cam1: {{ kit.cam1_count }} · Cam2: {{ kit.cam2_count }}</span>
   </td>
+  <td>
+    {{ kit.total_neglect_parts }}
+    <span class="kits-table__sub">Cam1: {{ kit.neglect_cam1_count }} · Cam2: {{ kit.neglect_cam2_count }}</span>
+  </td>
   <td class="kit-updated-at" data-updated-at="{{ kit.updated_at }}">{{ kit.updated_at }}</td>
   <td class="kits-table__actions">
     <a href="{{ url_for('configuration.current_kits_edit', table_id=table_id, kit_id=kit.id) }}" class="btn btn--secondary">Edit</a>
