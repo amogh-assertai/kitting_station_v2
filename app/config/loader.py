@@ -66,14 +66,18 @@ def _validate_settings(settings: dict) -> None:
         ("storage", "pqpr_dir"),
         ("storage", "pqpr_allowed_extensions"),
         ("storage", "max_upload_size_mb"),
+        ("storage", "audio_dir"),
+        ("storage", "audio_allowed_extensions"),
         ("mongodb", "db_name"),
         ("mongodb", "collections", "current_kits"),
+        ("mongodb", "collections", "table_configuration"),
         ("pqpr_parsing", "sheet_name"),
         ("pqpr_parsing", "header_row"),
         ("pqpr_parsing", "kit_name_column"),
         ("pqpr_parsing", "edp_column"),
         ("pqpr_parsing", "component_start_column"),
         ("pqpr_parsing", "top10_row_count"),
+        ("configuration", "tables"),
         ("theme", "default"),
         ("theme", "cookie_name"),
         ("theme", "cookie_max_age_days"),
@@ -90,6 +94,8 @@ def _validate_settings(settings: dict) -> None:
     if settings["theme"]["default"] not in ("dark", "light"):
         raise ValueError("theme.default in config.yaml must be 'dark' or 'light'")
 
+    _validate_table_registry(settings["configuration"]["tables"])
+
     if not settings["secrets"]["secret_key"]:
         raise ValueError(
             "SECRET_KEY is not set. Copy .env.example to .env and set a value."
@@ -99,3 +105,46 @@ def _validate_settings(settings: dict) -> None:
         raise ValueError(
             "MONGO_URI is not set. Add it to .env (e.g. mongodb://localhost:27017/)."
         )
+
+
+def _validate_table_registry(tables) -> None:
+    """Fail fast on a malformed configuration.tables entry - this list
+    drives the whole Configuration section (landing page, table_id
+    routing, Mongo document scoping), so a bad entry here should surface
+    at startup, not as a KeyError/TypeError deep in a request."""
+    if not isinstance(tables, list) or not tables:
+        raise ValueError(
+            "configuration.tables in config.yaml must be a non-empty list."
+        )
+
+    seen_ids = set()
+    for entry in tables:
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"configuration.tables entry must be a mapping, got: {entry!r}"
+            )
+
+        for field in ("id", "name", "built"):
+            if field not in entry:
+                raise ValueError(
+                    f"configuration.tables entry missing required key '{field}': {entry!r}"
+                )
+
+        table_id = entry["id"]
+        if not isinstance(table_id, int) or isinstance(table_id, bool) or table_id <= 0:
+            raise ValueError(
+                f"configuration.tables entry 'id' must be a positive integer, got: {table_id!r}"
+            )
+        if table_id in seen_ids:
+            raise ValueError(f"configuration.tables has a duplicate id: {table_id}")
+        seen_ids.add(table_id)
+
+        if not isinstance(entry["name"], str) or not entry["name"].strip():
+            raise ValueError(
+                f"configuration.tables entry {table_id} 'name' must be a non-empty string."
+            )
+
+        if not isinstance(entry["built"], bool):
+            raise ValueError(
+                f"configuration.tables entry {table_id} 'built' must be true or false."
+            )
