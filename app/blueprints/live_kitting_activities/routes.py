@@ -261,9 +261,9 @@ def finalize():
             error="Could not connect to the database. Is MongoDB running?",
         ), 500
 
-    # Monitor/detail page isn't built yet - land back on the activities
-    # list, where this new "live" activity will now appear as a card.
-    return redirect(url_for("live_kitting_activities.index"))
+    # Monitor page now exists - land directly on the new activity's
+    # monitor view instead of the landing list.
+    return redirect(url_for("live_kitting_activities.monitor", activity_id=activity_id))
 
 
 # ---------------------------------------------------------------------------
@@ -294,3 +294,29 @@ def complete_manually(activity_id):
         return jsonify(success=False, error="Could not connect to the database."), 500
 
     return jsonify(success=True)
+
+
+# ---------------------------------------------------------------------------
+# Monitor page - single activity detail
+# ---------------------------------------------------------------------------
+
+@live_kitting_activities_bp.route("/live-kitting-activities/<activity_id>/monitor")
+def monitor(activity_id):
+    try:
+        doc = activities_data.get_activity_by_id(_activities_collection(), activity_id)
+    except activities_data.ValidationError:
+        abort(404)
+    except PyMongoError:
+        abort(500)
+
+    if not doc:
+        abort(404)
+
+    view = activities_data.build_monitor_view(doc)
+    return render_template(
+        "live_kitting_activities/monitor.html",
+        active_page="live_kitting_activities",
+        activity=view,
+        table_id=view["table_id"],
+        table_name=view["table_name"],
+    )

@@ -24,7 +24,7 @@
 {% else %}
   <div class="activities-grid" data-complete-url-template="{{ url_for('live_kitting_activities.complete_manually', activity_id='ACTIVITY_ID') }}">
     {% for activity in activities %}
-      <div class="activity-card" data-activity-id="{{ activity.id }}">
+      <div class="activity-card" data-activity-id="{{ activity.id }}" data-monitor-url="{{ url_for('live_kitting_activities.monitor', activity_id=activity.id) }}">
         <div class="activity-card__header">
           <span>Table {{ activity.table_id }} — {{ activity.table_name }}</span>
         </div>

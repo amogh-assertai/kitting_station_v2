@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Monitor — {{ activity.kit_name }} — {{ app_name }}{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/live-activities.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
+{% endblock %}
+
+{% block main_class %} app-main--full-bleed{% endblock %}
+
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+
+{% block content %}
+<div class="monitor-page">
+  <div class="monitor-header">
+    <span class="monitor-status-pill monitor-status-pill--{{ activity.status }}">
+      {{ activity.status | replace("-", " ") | title }}
+    </span>
+
+    <div class="monitor-progress-group">
+      <div class="monitor-progress">
+        <div class="monitor-progress__label">
+          <span>Cam 1</span>
+          <span>{{ activity.cam1.total_count }}/{{ activity.cam1.total_required }} &middot; {{ activity.cam1.percent }}%</span>
+        </div>
+        <div class="monitor-progress__track">
+          <div class="monitor-progress__fill" style="width: {{ activity.cam1.percent }}%;"></div>
+        </div>
+      </div>
+      <div class="monitor-progress">
+        <div class="monitor-progress__label">
+          <span>Cam 2</span>
+          <span>{{ activity.cam2.total_count }}/{{ activity.cam2.total_required }} &middot; {{ activity.cam2.percent }}%</span>
+        </div>
+        <div class="monitor-progress__track">
+          <div class="monitor-progress__fill" style="width: {{ activity.cam2.percent }}%;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="monitor-header__info-col monitor-header__total-time">
+      <span class="monitor-header__info-label">Total time</span>
+      <span class="monitor-header__info-value" data-activity-timer data-created-at="{{ activity.created_at }}">--:--:--</span>
+    </div>
+
+    <div class="monitor-header__info">
+      <div class="monitor-header__info-col">
+        <span class="monitor-header__info-label">Order</span>
+        <span class="monitor-header__info-value">{{ activity.order_number }}</span>
+      </div>
+      <div class="monitor-header__info-col">
+        <span class="monitor-header__info-label">Kit name</span>
+        <span class="monitor-header__info-value">{{ activity.kit_name }}</span>
+      </div>
+      <div class="monitor-header__info-col">
+        <span class="monitor-header__info-label">EDP</span>
+        <span class="monitor-header__info-value">{{ activity.edp_number }}</span>
+      </div>
+      <button type="button" class="btn btn--secondary btn--small monitor-settings-btn">See current settings</button>
+    </div>
+  </div>
+
+  <div class="monitor-cameras">
+    {% for cam in [activity.cam1, activity.cam2] %}
+      <div class="camera-panel">
+        <div class="camera-panel__header">
+          <div class="camera-panel__title">
+            <span class="camera-panel__icon" aria-hidden="true">&#9679;</span>
+            <span>{{ cam.camera_label }}</span>
+            <span
+              class="camera-panel__timer"
+              data-activity-timer
+              data-created-at="{{ activity.created_at }}"
+              title="Activity running time (per-kit timing not tracked yet)"
+            >--:--:--</span>
+            <button type="button" class="btn btn--secondary btn--small camera-panel__history-btn">History</button>
+          </div>
+          <span class="camera-panel__kit-index">Kit #{{ cam.current_kit_index }}</span>
+        </div>
+
+        <div class="camera-panel__section camera-panel__section--completed">
+          Completed ({{ cam.completed_parts | length }})
+        </div>
+        <div class="camera-panel__cards">
+          {% for part in cam.completed_parts %}
+            <div class="part-card part-card--completed">
+              <span class="part-card__name">{{ part.part_name }}</span>
+              <span class="part-card__qty">Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+              <span class="part-card__badge">Last detected</span>
+            </div>
+          {% endfor %}
+        </div>
+
+        <div class="camera-panel__section camera-panel__section--pending">
+          Pending ({{ cam.pending_parts | length }})
+        </div>
+        <div class="camera-panel__cards">
+          {% for part in cam.pending_parts %}
+            <div class="part-card part-card--pending">
+              <span class="part-card__name">{{ part.part_name }}</span>
+              <span class="part-card__qty">Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+              <span class="part-card__warning" aria-hidden="true">&#9888;</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
+{% endblock %}

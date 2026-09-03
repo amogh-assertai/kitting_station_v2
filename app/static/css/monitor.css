@@ -1,0 +1,290 @@
+/* Monitor page - single-activity full-width detail view.
+   Loaded via {% block extra_css %} on this page only. Uses only the real
+   custom properties defined in variables.css (confirmed against the
+   actual file). Layout goal per client spec: use full available width
+   and height below the top nav.
+
+   .app-main normally caps at max-width: 1200px, centers itself, and adds
+   padding + a border (see layout.css) - correct for every other page,
+   but this page needs to break out of that. Rather than edit the shared
+   .app-main rule (which would affect every page), monitor.html adds an
+   extra "app-main--full-bleed" class alongside "app-main" ONLY on this
+   page, and that combination is overridden here, scoped to this
+   page's stylesheet. No other page loads this CSS file, so no other
+   page is affected. */
+
+.app-main.app-main--full-bleed {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: var(--spacing-md);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-main.app-main--full-bleed .app-main__top-row {
+  flex: 0 0 auto;
+}
+
+.monitor-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- Header: status pill, dual progress bars, order info ---------- */
+
+.monitor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  flex-wrap: wrap;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  padding: var(--spacing-md) var(--spacing-lg);
+}
+
+.monitor-status-pill {
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.monitor-status-pill--live {
+  background-color: #0f6e56;
+  color: #ffffff;
+}
+
+.monitor-status-pill--completed {
+  background-color: var(--color-text-muted);
+  color: var(--color-bg);
+}
+
+.monitor-status-pill--completed-manually {
+  background-color: #993c1d;
+  color: #ffffff;
+}
+
+.monitor-progress-group {
+  display: flex;
+  gap: var(--spacing-xl);
+  flex: 1 1 400px;
+  max-width: 480px;
+  min-width: 260px;
+}
+
+.monitor-header__total-time {
+  padding-right: var(--spacing-lg);
+  border-right: 1px solid var(--color-border);
+}
+
+.monitor-progress {
+  flex: 1;
+  min-width: 140px;
+}
+
+.monitor-progress__label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  margin-bottom: var(--spacing-xs);
+}
+
+.monitor-progress__label span:first-child {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.monitor-progress__track {
+  height: 8px;
+  background-color: var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.monitor-progress__fill {
+  height: 100%;
+  background-color: var(--color-accent);
+  border-radius: 4px;
+}
+
+.monitor-header__info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.monitor-header__info-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 90px;
+}
+
+.monitor-header__info-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.03em;
+}
+
+.monitor-header__info-value {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* ---------- Camera panels: two columns, full remaining height ---------- */
+
+.monitor-cameras {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+  flex: 1;
+  min-height: 0;
+}
+
+.camera-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  padding: var(--spacing-md);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.camera-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-md);
+}
+
+.camera-panel__title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.camera-panel__icon {
+  font-size: 0.6rem;
+  color: var(--color-text-muted);
+}
+
+.camera-panel__timer {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.camera-panel__kit-index {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.camera-panel__section {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  margin-bottom: var(--spacing-sm);
+}
+
+.camera-panel__section--completed {
+  background-color: #e1f5ee;
+  color: #085041;
+}
+
+[data-theme="dark"] .camera-panel__section--completed {
+  background-color: #04342c;
+  color: #9fe1cb;
+}
+
+.camera-panel__section--pending {
+  background-color: var(--color-accent-hover-bg);
+  color: var(--color-accent);
+}
+
+.camera-panel__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.part-card {
+  position: relative;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-bg);
+}
+
+.part-card--completed {
+  border-left-color: #1d9e75;
+  background-color: #e1f5ee;
+}
+
+[data-theme="dark"] .part-card--completed {
+  background-color: #04342c;
+}
+
+.part-card__name {
+  display: block;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  margin-bottom: 0.15rem;
+}
+
+.part-card__qty {
+  display: block;
+  font-size: 0.8125rem;
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.part-card--completed .part-card__qty {
+  color: #085041;
+}
+
+[data-theme="dark"] .part-card--completed .part-card__qty {
+  color: #9fe1cb;
+}
+
+.part-card__warning {
+  position: absolute;
+  bottom: 0.4rem;
+  right: 0.5rem;
+  color: #ef9f27;
+  font-size: 0.9rem;
+}
+
+.part-card__badge {
+  position: absolute;
+  bottom: 0.3rem;
+  right: 0.5rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background-color: var(--color-text-primary);
+  color: var(--color-bg);
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-sm);
+}

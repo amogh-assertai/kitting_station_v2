@@ -24,6 +24,8 @@ A Flask-based, server-rendered web app styled and used like an HMI (Human-Machin
 | `docs/tsd/TSD_BASE_LAYOUT.md` | Technical spec of the shell — how theming/back-button/table-badge/sub-nav are implemented |
 | `docs/frd/FRD_CONFIGURATION.md` | Functional spec of the Configuration section — multi-table selection, Current Kits Configuration, PQPR Analytics, Table Settings |
 | `docs/tsd/TSD_CONFIGURATION.md` | Technical spec of the Configuration section — table registry, MongoDB schemas, routes, data flow |
+| `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page |
+| `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec of Live Kitting Activities — routes, MongoDB schemas (`live_activity_details`, `activity_history`), data flow, timer/timezone handling |
 | `docs/WORKING_STYLE_AND_CONSTRAINTS.md` | How the client works — communication style, file delivery convention, build philosophy. **Read before making any change or delivering anything.** |
 
 There is no longer a single monolithic `FUNCTIONAL_DOC.md`/`TECHNICAL_DOC.md` — docs are split by section (FRD = what it does, TSD = how it's built) so each area can be updated independently as it's built out.
@@ -48,7 +50,7 @@ configuration:
 
 - `table_id` is the reference used everywhere (URLs, MongoDB documents, filesystem paths) — never the table name.
 - `built: true` is the only table with real functionality right now (Table 1 / HVGKC-CELL). Tables 2 and 3 exist in the registry and show a placeholder page, but have no functionality yet.
-- If a future page/section (e.g. Live Kitting Activities, History) needs to be table-scoped too, follow the same pattern: `table_id` in the URL, a `_require_built_table()`-style guard, and Mongo documents carrying a `table_id` field.
+- If a future page/section (e.g. History) needs to be table-scoped too, follow the same pattern: `table_id` in the URL, a `_require_built_table()`-style guard, and Mongo documents carrying a `table_id` field. Live Kitting Activities already follows this pattern — see `TSD_LIVE_KITTING_ACTIVITIES.md`.
 
 ## Current state (high level)
 
@@ -58,11 +60,12 @@ configuration:
 - Configuration → Current Kits Configuration — full CRUD, live search, parts + parts-to-neglect sub-tables, per-camera alert configuration, Total Parts / Total Parts to Neglect counts
 - Configuration → PQPR Analytics — Excel upload/replace/download, two-panel component/kit search
 - Configuration → Table Settings — Audio Settings (4 camera/color slots, MP3 upload + preview + default enabled/disabled), Expected Client IP Addresses, Push Notification Settings (emails + 4 notification toggles, one with a threshold percent)
+- Live Kitting Activities — landing page (live-activity cards, Complete Manually), 2-step create-activity flow (station/order/EDP lookup → camera check), full-width/height monitor page with per-camera completed/pending part cards. **Detected part counts are static (0) — not yet wired to real detection events.** See `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`.
 
 **Not yet built:**
 - Table 2 (Truck Cell 1) and Table 3 (Truck Cell 2) — registry entries exist, everything else is a placeholder
-- Live Kitting Activities — placeholder, needs Flask-SocketIO (not wired)
-- History — placeholder, needs MongoDB (Current Kits Configuration and Table Settings already use Mongo; History does not yet)
+- Live Kitting Activities' real detection wiring — UI/routes/schema are built, but part counts don't yet reflect real camera/model output; needs Flask-SocketIO or another push mechanism plus a CV-side ingest endpoint (not yet decided)
+- History — placeholder, needs MongoDB (Current Kits Configuration, Table Settings, and Live Kitting Activities already use Mongo; History does not yet)
 - No authentication/authorization layer
 
 ## Tech stack (fixed — don't change without asking the client)
@@ -87,6 +90,8 @@ app/
 │   ├── pqpr_parser.py                      # Excel -> JSON, config-driven layout
 │   ├── current_kits_data.py                # MongoDB data access + validation (current_kit_configurations)
 │   └── table_settings_data.py              # MongoDB data access + validation (table_configuration)
+├── blueprints/live_kitting_activities/
+│   └── activities_data.py                  # MongoDB data access + validation (live_activity_details, activity_history)
 ├── config/
 │   ├── loader.py                           # config.yaml + .env merge, fail-fast validation
 │   └── db.py                               # MongoDB client setup
@@ -98,6 +103,11 @@ app/
 │   ├── current_kits.html, kit_form.html, _kit_row.html, _part_row.html, _neglect_row.html
 │   ├── pqpr_analytics.html
 │   └── table_settings.html
+├── templates/live_kitting_activities/
+│   ├── index.html                          # landing page - activity cards
+│   ├── create.html                         # step 1 of create flow
+│   ├── camera_check.html                   # step 2 of create flow
+│   └── monitor.html                        # single-activity monitor page (full-width/height)
 └── static/{css,js}/                        # one file per concern; globally-linked files listed in base.html, page-specific ones loaded via {% block extra_css %}/{% block extra_js %}
 ```
 

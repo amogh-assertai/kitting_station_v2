@@ -251,8 +251,76 @@ def create_live_activity(activities_collection, kits_collection, payload, camera
 
 
 # ---------------------------------------------------------------------------
-# Complete manually - moves the doc from live_activities to activity_history
+# Monitor page - single activity detail, with parts split by camera
 # ---------------------------------------------------------------------------
+
+def get_activity_by_id(collection, activity_id):
+    """Fetch one activity doc by id, or None if it doesn't exist. Raises
+    ValidationError on a malformed id (caught in routes.py -> 404)."""
+    object_id = _to_object_id(activity_id, "activity id")
+    return collection.find_one({"_id": object_id})
+
+
+def build_monitor_view(doc):
+    """Shapes a raw live_activity_details doc into the monitor page's
+    per-camera structure. Splits parts_configured by camera, and starts
+    every part's detected count at 0 (confirmed scope: this is a UI-only
+    build - progress counts are not yet driven by real detection events,
+    that wiring is a later build). A part is "completed" once its count
+    reaches quantity_required; all parts currently start pending since
+    count is always 0 here.
+
+    The progress bar/percent is NOT derived from part quantities - it
+    tracks kits packed so far (current_kit_index_cam{1,2}) against the
+    activity's overall target (quantity_required, e.g. 50 units to
+    pack), confirmed scope. Per-part Qty X/Y on each card is a separate,
+    unrelated number (how many of that specific part have been detected
+    for the CURRENT kit, out of how many that kit needs)."""
+
+    target = doc.get("quantity_required", 0)
+
+    def _parts_for_camera(camera):
+        parts = []
+        for part in doc.get("parts_configured", []):
+            if part.get("camera") != camera:
+                continue
+            required = part.get("quantity_required", 0)
+            count = 0  # static for this UI-only build - not yet wired to detections
+            parts.append({
+                "part_name": part.get("part_name"),
+                "count": count,
+                "quantity_required": required,
+                "completed": count >= required and required > 0,
+            })
+        return parts
+
+    def _camera_summary(camera, kit_index):
+        parts = _parts_for_camera(camera)
+        completed = [p for p in parts if p["completed"]]
+        pending = [p for p in parts if not p["completed"]]
+        percent = round((kit_index / target) * 100, 2) if target else 0.0
+        return {
+            "camera_label": "CAM1" if camera == "cam1" else "CAM2",
+            "current_kit_index": kit_index,
+            "completed_parts": completed,
+            "pending_parts": pending,
+            "total_count": kit_index,
+            "total_required": target,
+            "percent": percent,
+        }
+
+    return {
+        "id": str(doc["_id"]),
+        "table_id": doc.get("table_id"),
+        "table_name": doc.get("table_name"),
+        "kit_name": doc.get("kit_name"),
+        "edp_number": doc.get("edp_number"),
+        "order_number": doc.get("order_number"),
+        "status": doc.get("status"),
+        "created_at": doc.get("created_at"),
+        "cam1": _camera_summary("cam1", doc.get("current_kit_index_cam1", 1)),
+        "cam2": _camera_summary("cam2", doc.get("current_kit_index_cam2", 1)),
+    }
 
 def complete_activity_manually(activities_collection, history_collection, activity_id, reason):
     """Moves a live activity to the history collection with status

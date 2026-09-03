@@ -24,7 +24,7 @@ The app configures and (eventually) monitors multiple physical kitting **tables*
 | 2 | Truck Cell 1 | Registered, not yet built (placeholder) |
 | 3 | Truck Cell 2 | Registered, not yet built (placeholder) |
 
-More tables can be added later (4, 5, ...) — this is a config change, not a code change. Any future section that needs to vary per table (Live Kitting Activities, History) should follow the same `table_id`-scoped pattern established in Configuration — see `FRD_CONFIGURATION.md` and `TSD_CONFIGURATION.md`.
+More tables can be added later (4, 5, ...) — this is a config change, not a code change. Live Kitting Activities already follows the same `table_id`-scoped pattern established in Configuration (see `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`); any future section (e.g. History) that needs to vary per table should do the same.
 
 ## Navigation structure
 
@@ -42,7 +42,7 @@ Active page/tab is visually highlighted throughout. Every page also has a global
 | Page | Status | User goal |
 |---|---|---|
 | Home | Shell only | Landing page |
-| Live Kitting Activities | Placeholder — needs Flask-SocketIO | View a real-time feed of kitting activity on the floor |
+| Live Kitting Activities | **Built** — UI, routes, and MongoDB schema complete; detected part counts are static until real detection events are wired | Start and monitor a live kit-packing run: create an activity, watch per-camera progress, complete it (normally or manually) |
 | History | Placeholder — needs MongoDB | Look up past kitting activity/records |
 | Configuration (landing) | **Built** | Choose which table to configure |
 | Configuration → Table 1 (HVGKC-CELL) → Current Kits Configuration | **Built** | Create, edit, search, and delete kit definitions (parts, cameras, alert rules, per-camera alert toggles) |
@@ -53,8 +53,8 @@ Active page/tab is visually highlighted throughout. Every page also has a global
 
 ## Out of scope (not yet built)
 
-- Table 2 / Table 3 functionality (any of Current Kits Configuration, PQPR Analytics, Table Settings for those tables)
-- Real-time kitting activity feed (needs Flask-SocketIO wiring)
+- Table 2 / Table 3 functionality (any of Current Kits Configuration, PQPR Analytics, Table Settings, or Live Kitting Activities for those tables)
+- Live Kitting Activities' real-time detection wiring — part counts are currently static (see `FRD_LIVE_KITTING_ACTIVITIES.md`); needs a CV-side ingest path and likely Flask-SocketIO
 - History browsing/audit trail (needs MongoDB integration for that blueprint)
 - Any authentication/authorization
 
@@ -62,3 +62,4 @@ Active page/tab is visually highlighted throughout. Every page also has a global
 
 - Shell (header, nav, theming, back button, table badge, sub-nav, fit-to-screen behavior): `FRD_BASE_LAYOUT.md`
 - Configuration section (table selection, both Table 1 sub-tabs, Table Settings, full functional detail): `FRD_CONFIGURATION.md`
+- Live Kitting Activities (landing page, create-activity flow, monitor page): `FRD_LIVE_KITTING_ACTIVITIES.md`

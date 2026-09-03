@@ -17,6 +17,36 @@
  * matches their wall clock rather than raw UTC.
  */
 
+function getTimezoneLabel(date) {
+  // formatToParts gives structured output instead of a rendered string,
+  // so there's nothing to split/slice - avoids the previous bug where
+  // parsing an already-formatted string broke on browsers that shape it
+  // differently than expected.
+  const tryFormat = (timeZoneName) => {
+    try {
+      const parts = new Intl.DateTimeFormat(undefined, { timeZoneName }).formatToParts(date);
+      const part = parts.find((p) => p.type === "timeZoneName");
+      return part ? part.value : "";
+    } catch (err) {
+      return "";
+    }
+  };
+
+  const generic = tryFormat("shortGeneric");
+  if (generic) return generic;
+
+  const short = tryFormat("short");
+  if (short) return short;
+
+  // Ultimate fallback: the IANA zone id itself (e.g. "Asia/Kolkata") -
+  // always resolvable, never blank, unambiguous regardless of locale.
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch (err) {
+    return "";
+  }
+}
+
 function formatLocalStartTime(isoString) {
   const date = new Date(isoString);
   if (isNaN(date.getTime())) return "Started —";
@@ -27,12 +57,9 @@ function formatLocalStartTime(isoString) {
     hour12: true,
   });
 
-  const tzPart = date
-    .toLocaleTimeString(undefined, { timeZoneName: "short" })
-    .split(" ")
-    .pop();
+  const tzPart = getTimezoneLabel(date);
 
-  return `Started ${timePart} ${tzPart}`;
+  return tzPart ? `Started ${timePart} ${tzPart}` : `Started ${timePart}`;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -56,8 +83,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const viewMonitorBtn = card.querySelector(".activity-card__view-monitor");
 
     viewMonitorBtn.addEventListener("click", () => {
-      // Stub - monitor/detail page isn't built yet.
-      alert("Monitor view is not available yet.");
+      window.location.href = card.dataset.monitorUrl;
     });
 
     completeBtn.addEventListener("click", () => {
