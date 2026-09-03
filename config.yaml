@@ -25,6 +25,8 @@ mongodb:
   collections:
     current_kits: "current_kit_configurations"
     table_configuration: "table_configuration"
+    live_activities: "live_activity_details"
+    activity_history: "activity_history"
 
 pqpr_parsing:
   sheet_name: "PQPR - FG -- Copy"

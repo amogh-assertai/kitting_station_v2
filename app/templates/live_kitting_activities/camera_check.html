@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Camera Check — {{ app_name }}{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/live-activities.css') }}">
+{% endblock %}
+
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+
+{% block content %}
+<div class="camera-check-page">
+  <h1>Camera Check</h1>
+  <p class="camera-check-page__subtitle">
+    Kit <strong>{{ kit_name }}</strong> &middot; Order {{ order_number }} &middot; EDP {{ edp_number }}
+  </p>
+
+  {% if error %}
+    <p class="form-error">{{ error }}</p>
+  {% endif %}
+
+  <div class="camera-check-grid">
+    <div class="camera-check-card">
+      <h2>Camera 1</h2>
+      <img src="{{ url_for('static', filename=camera_images.cam1) }}" alt="Camera 1 check image" class="camera-check-card__image">
+    </div>
+    <div class="camera-check-card">
+      <h2>Camera 2</h2>
+      <img src="{{ url_for('static', filename=camera_images.cam2) }}" alt="Camera 2 check image" class="camera-check-card__image">
+    </div>
+  </div>
+
+  <form method="POST" action="{{ url_for('live_kitting_activities.finalize') }}" class="camera-check-page__actions">
+    <input type="hidden" name="table_id" value="{{ table_id }}">
+    <input type="hidden" name="table_name" value="{{ table_name }}">
+    <input type="hidden" name="order_number" value="{{ order_number }}">
+    <input type="hidden" name="edp_number" value="{{ edp_number }}">
+    <input type="hidden" name="kit_id" value="{{ kit_id }}">
+    <input type="hidden" name="kit_name" value="{{ kit_name }}">
+    <input type="hidden" name="quantity_required" value="{{ quantity_required }}">
+
+    <a href="{{ url_for('live_kitting_activities.index') }}" class="btn btn--secondary">Cancel</a>
+    <button type="submit" class="btn btn--primary">Create Activity</button>
+  </form>
+</div>
+{% endblock %}

@@ -71,6 +71,7 @@ def _validate_settings(settings: dict) -> None:
         ("mongodb", "db_name"),
         ("mongodb", "collections", "current_kits"),
         ("mongodb", "collections", "table_configuration"),
+        ("mongodb", "collections", "live_activities"),
         ("pqpr_parsing", "sheet_name"),
         ("pqpr_parsing", "header_row"),
         ("pqpr_parsing", "kit_name_column"),

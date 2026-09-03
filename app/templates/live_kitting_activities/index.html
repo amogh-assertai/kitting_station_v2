@@ -2,7 +2,73 @@
 
 {% block title %}Live Kitting Activities — {{ app_name }}{% endblock %}
 
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/live-activities.css') }}">
+{% endblock %}
+
 {% block content %}
-  <h1>Live Kitting Activities</h1>
-  <p>Placeholder page. Real-time kitting activity feed will be built in a later task.</p>
+<div class="activities-header">
+  <div class="activities-header__title">
+    <h1>Live Kitting Activities</h1>
+    <p class="activities-header__subtitle">Monitor and manage live kitting stations.</p>
+  </div>
+  <a href="{{ url_for('live_kitting_activities.create') }}" class="btn btn--primary">
+    <span aria-hidden="true">+</span> Create New Kitting Activity
+  </a>
+</div>
+
+{% if db_error %}
+  <p class="activities-empty">{{ db_error }}</p>
+{% elif not activities %}
+  <p class="activities-empty">No active kitting activities.</p>
+{% else %}
+  <div class="activities-grid" data-complete-url-template="{{ url_for('live_kitting_activities.complete_manually', activity_id='ACTIVITY_ID') }}">
+    {% for activity in activities %}
+      <div class="activity-card" data-activity-id="{{ activity.id }}">
+        <div class="activity-card__header">
+          <span>Table {{ activity.table_id }} — {{ activity.table_name }}</span>
+        </div>
+
+        <div class="activity-card__body">
+          <h2 class="activity-card__kit-name">{{ activity.kit_name }}</h2>
+          <p class="activity-card__meta">Order {{ activity.order_number }} &middot; EDP {{ activity.edp_number }}</p>
+
+          <div class="activity-card__progress">
+            <div class="activity-card__progress-col">
+              <span class="activity-card__progress-label">Cam 1</span>
+              <span class="activity-card__progress-value">{{ activity.current_kit_index_cam1 }}<span class="activity-card__progress-total">/{{ activity.quantity_required }}</span></span>
+            </div>
+            <div class="activity-card__progress-divider"></div>
+            <div class="activity-card__progress-col">
+              <span class="activity-card__progress-label">Cam 2</span>
+              <span class="activity-card__progress-value">{{ activity.current_kit_index_cam2 }}<span class="activity-card__progress-total">/{{ activity.quantity_required }}</span></span>
+            </div>
+          </div>
+
+          <p class="activity-card__started" data-created-at="{{ activity.created_at }}">Started —</p>
+
+          <div class="activity-card__actions">
+            <button type="button" class="btn btn--primary btn--small activity-card__view-monitor">View monitor</button>
+            <button type="button" class="btn btn--danger btn--small activity-card__complete-btn">Complete manually</button>
+          </div>
+
+          <div class="activity-card__confirm" hidden>
+            <p class="activity-card__confirm-question">Complete this activity manually?</p>
+            <label class="activity-card__confirm-label" for="reason-{{ activity.id }}">Reason (optional)</label>
+            <textarea id="reason-{{ activity.id }}" class="activity-card__confirm-reason" rows="2" placeholder="Why is this being completed manually?"></textarea>
+            <p class="activity-card__confirm-error" hidden></p>
+            <div class="activity-card__confirm-actions">
+              <button type="button" class="btn btn--secondary btn--small activity-card__confirm-no">No</button>
+              <button type="button" class="btn btn--danger btn--small activity-card__confirm-yes">Yes, complete</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/live-activities-list.js') }}"></script>
 {% endblock %}

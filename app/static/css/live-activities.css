@@ -1,0 +1,336 @@
+/* Live Kitting Activities - landing, create (step 1), camera-check (step 2).
+   Loaded via {% block extra_css %} on this blueprint's pages only, same
+   convention as config-landing.css / table-settings.css. Uses only the
+   real CSS custom properties defined in variables.css - confirmed against
+   the actual file (no invented tokens like --color-danger or --radius-lg
+   from the previous draft). */
+
+/* ---------- Shared buttons (no existing global .btn class was found in
+   nav.css/branding.css - these are net-new, scoped to this blueprint) ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.2;
+  transition: var(--transition-theme), transform 0.15s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.btn--primary {
+  background-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.btn--primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn--secondary {
+  background-color: transparent;
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.btn--secondary:hover {
+  background-color: var(--color-accent-hover-bg);
+  border-color: var(--color-accent);
+}
+
+/* Danger (red) - used for "Complete Manually". No red token exists in
+   variables.css yet, so a fixed color is used directly here rather than
+   inventing a new custom property unilaterally - flag if you'd rather
+   this become a proper --color-danger token in variables.css. */
+.btn--danger {
+  background-color: #dc2626;
+  color: #ffffff;
+}
+
+.btn--danger:hover {
+  background-color: #b91c1c;
+}
+
+.btn--danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn--small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+/* ---------- Landing page ---------- */
+
+.activities-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.activities-header__title h1 {
+  margin: 0;
+}
+
+.activities-header__subtitle {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-muted);
+}
+
+.activities-empty {
+  color: var(--color-text-muted);
+  padding: var(--spacing-lg) 0;
+}
+
+.activities-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.activity-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  overflow: hidden;
+}
+
+.activity-card__header {
+  background-color: var(--color-accent);
+  color: var(--color-bg);
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.activity-card__body {
+  padding: var(--spacing-md);
+  text-align: center;
+}
+
+.activity-card__kit-name {
+  margin: 0 0 0.2rem;
+  font-size: 1.1rem;
+  color: var(--color-text-primary);
+}
+
+.activity-card__meta {
+  margin: 0 0 var(--spacing-md);
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.activity-card__progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-md);
+}
+
+.activity-card__progress-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.activity-card__progress-divider {
+  width: 1px;
+  align-self: stretch;
+  background-color: var(--color-border);
+}
+
+.activity-card__progress-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.03em;
+}
+
+.activity-card__progress-value {
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--color-accent);
+  line-height: 1.3;
+}
+
+.activity-card__progress-total {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.activity-card__started {
+  margin: 0 0 var(--spacing-md);
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.activity-card__actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--spacing-sm);
+}
+
+.activity-card__confirm {
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+}
+
+.activity-card__confirm-question {
+  margin: 0 0 var(--spacing-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-align: left;
+}
+
+.activity-card__confirm-label {
+  display: block;
+  margin-bottom: var(--spacing-xs);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  text-align: left;
+}
+
+.activity-card__confirm-reason {
+  width: 100%;
+  padding: var(--spacing-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-base);
+  font-size: 0.9rem;
+  resize: vertical;
+}
+
+.activity-card__confirm-error {
+  color: #dc2626;
+  font-size: 0.85rem;
+  margin: var(--spacing-xs) 0 0;
+}
+
+.activity-card__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+}
+
+/* ---------- Create form (step 1) ---------- */
+
+.activity-form-page {
+  max-width: 520px;
+}
+
+.form-field {
+  margin-bottom: var(--spacing-md);
+}
+
+.form-field label {
+  display: block;
+  margin-bottom: var(--spacing-xs);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.form-field__hint {
+  font-weight: 400;
+  color: var(--color-accent);
+  font-size: 0.85rem;
+}
+
+.form-field input,
+.form-field select {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+}
+
+.form-field input[readonly] {
+  background-color: var(--color-accent-hover-bg);
+  color: var(--color-text-muted);
+}
+
+.form-error {
+  color: #dc2626;
+  margin: 0 0 var(--spacing-md);
+}
+
+.activity-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-lg);
+}
+
+/* ---------- Camera check (step 2) ---------- */
+
+.camera-check-page {
+  max-width: 900px;
+}
+
+.camera-check-page__subtitle {
+  color: var(--color-text-muted);
+  margin-top: -0.3rem;
+}
+
+.camera-check-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+  margin: var(--spacing-lg) 0;
+}
+
+.camera-check-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm);
+  text-align: center;
+  background-color: var(--color-surface);
+}
+
+.camera-check-card h2 {
+  margin: 0 0 var(--spacing-sm);
+  font-size: 1rem;
+  color: var(--color-text-primary);
+}
+
+.camera-check-card__image {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  display: block;
+}
+
+.camera-check-page__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
