@@ -4,15 +4,15 @@
 
 | File | Role |
 |---|---|
-| `app/templates/base.html` | Shell markup: header/nav/back-button/subnav block/main/footer |
-| `app/templates/configuration/_subnav.html` | Configuration's sub-nav, included via `{% block subnav %}` |
+| `app/templates/base.html` | Shell markup: header/nav/back-button+table-badge row/subnav block/main/footer |
+| `app/templates/configuration/_subnav.html` | Configuration's sub-nav (Tables link, table-name label, tab links), included via `{% block subnav %}` |
 | `app/static/css/reset.css` | Minimal reset |
 | `app/static/css/variables.css` | Theme tokens (CSS custom properties), scoped under `[data-theme="dark"]`/`[data-theme="light"]` |
-| `app/static/css/layout.css` | Fit-to-screen shell (header/main/footer flex layout) |
+| `app/static/css/layout.css` | Fit-to-screen shell (header/main/footer flex layout) + `.app-main__top-row` (back button + table badge row) |
 | `app/static/css/nav.css` | Top nav + theme toggle button styling |
 | `app/static/css/branding.css` | Logo chip + app name/version styling |
-| `app/static/css/subnav.css` | Sub-nav tab styling |
-| `app/static/css/back-button.css` | Back button styling |
+| `app/static/css/subnav.css` | Sub-nav styling — button/pill tabs matching the top nav, plus the "← Tables" link and table-name label |
+| `app/static/css/back-button.css` | Back button styling + `.table-badge` component styling |
 | `app/static/js/theme-toggle.js` | Theme flip + cookie persistence |
 | `app/static/js/back-button.js` | Back-button click handling |
 
@@ -38,21 +38,30 @@ body { display: flex; flex-direction: column; }
 ```
 `min-height: 0` is required for the flex child to actually scroll instead of overflowing. This means **no page ever needs its own scroll CSS** — any page's content that overflows scrolls inside `.app-main` automatically.
 
-## Back button (implementation)
+## Back button + table badge (implementation)
 
-**Markup** — rendered once, globally, in `base.html`:
+**Markup** — rendered once, globally, in `base.html`, with the Back button and an empty `{% block table_badge %}` wrapped in a flex row:
 ```html
 <main class="app-main">
-  <button type="button" id="back-button" class="back-button" aria-label="Go back"
-          data-fallback-url="{{ url_for('home.index') }}">
-    <span aria-hidden="true">&larr;</span> Back
-  </button>
+  <div class="app-main__top-row">
+    <button type="button" id="back-button" class="back-button" aria-label="Go back"
+            data-fallback-url="{{ url_for('home.index') }}">
+      <span aria-hidden="true">&larr;</span> Back
+    </button>
+    {% block table_badge %}{% endblock %}
+  </div>
   {% block content %}{% endblock %}
 </main>
 ```
-Placed once at the shell level (same pattern already used for CSS/JS files being linked globally rather than per-page) — no per-template work needed for a new page to get a working back button.
+`layout.css` lays the row out with `display: flex; align-items: center; gap: var(--spacing-md);` and zeroes the back button's own `margin-bottom` inside the row (the row owns that spacing instead, to avoid double-spacing).
 
-**Behavior** (`back-button.js`):
+The `table_badge` block is empty by default, so pages that aren't table-scoped (Home, Live Kitting Activities, History, the Configuration landing page, the table placeholder page) render nothing there — no per-template work needed to opt out. A table-scoped page opts in with one line:
+```html
+{% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
+```
+Currently used by `current_kits.html`, `kit_form.html`, `pqpr_analytics.html`, and `table_settings.html` — all four receive `table_id` and `table_name` from their route (see `TSD_CONFIGURATION.md`).
+
+**Back button behavior** (`back-button.js`, unchanged):
 ```js
 if (window.history.length > 1) {
   window.history.back();
@@ -64,7 +73,28 @@ Uses real browser history so "back" returns to wherever the user actually naviga
 
 **Known trade-off:** the button also renders on Home. If there's browser history from outside the app, "Back" from Home could navigate away from the site entirely. Not suppressed by default — flagged as an open item if the client wants Home excluded.
 
-## Sub-nav pattern (for future top-nav pages needing tabs)
+## Sub-nav (implementation)
+
+`app/templates/configuration/_subnav.html` (shared by all three of Table 1's built pages):
+```html
+<nav class="app-subnav" aria-label="{{ table_name }} configuration sections">
+  <div class="app-subnav__inner">
+    <a href="{{ url_for('configuration.index') }}" class="app-subnav__link app-subnav__link--tables">← Tables</a>
+    <span class="app-subnav__table-label">{{ table_name }}</span>
+    <a href="{{ url_for('configuration.current_kits', table_id=table_id) }}"
+       class="app-subnav__link {% if active_subtab == 'current_kits' %}app-subnav__link--active{% endif %}">Current Kits Configuration</a>
+    <a href="{{ url_for('configuration.pqpr_analytics', table_id=table_id) }}"
+       class="app-subnav__link {% if active_subtab == 'pqpr_analytics' %}app-subnav__link--active{% endif %}">PQPR Analytics</a>
+    <a href="{{ url_for('configuration.table_settings', table_id=table_id) }}"
+       class="app-subnav__link {% if active_subtab == 'table_settings' %}app-subnav__link--active{% endif %}">Table Settings</a>
+  </div>
+</nav>
+```
+Each page overrides `{% block subnav %}{% include "configuration/_subnav.html" %}{% endblock %}` and passes `table_id`, `table_name`, and `active_subtab` from its route — the same pattern documented in the original sub-nav design below.
+
+`subnav.css` styles `.app-subnav__link` as a button/pill (padding, border-radius, background + border on hover/active) to match `.app-nav__link` in `nav.css`, rather than the earlier underline-tab style. `.app-subnav__link--tables` (the "← Tables" link) and `.app-subnav__table-label` (the static table-name label) are visually quieter — no active state, since they're not tabs.
+
+### General pattern (for future top-nav pages needing tabs)
 
 Each blueprint that needs a second nav level:
 1. Adds `active_subtab` to its render context alongside `active_page`.

@@ -1,6 +1,6 @@
 # FRD — Kitting Station v2 (Whole App)
 
-Functional requirements at the app level. For the shared shell (nav, theming, back button), see `FRD_BASE_LAYOUT.md`. For Configuration tab detail, see `FRD_CONFIGURATION.md`.
+Functional requirements at the app level. For the shared shell (nav, theming, back button, table badge), see `FRD_BASE_LAYOUT.md`. For Configuration tab detail, see `FRD_CONFIGURATION.md`.
 
 ## Product identity
 
@@ -14,13 +14,28 @@ Functional requirements at the app level. For the shared shell (nav, theming, ba
 | Devices | Laptop monitors and larger fixed screens (fit-to-screen, no page scroll) |
 | Domain | Manufacturing / kitting station monitoring |
 
+## Multi-table concept
+
+The app configures and (eventually) monitors multiple physical kitting **tables** (stations/cells) — not just one. Each table has a stable numeric reference (`table_id`: 1, 2, 3, ...) and a display name. Currently registered:
+
+| table_id | Name | Status |
+|---|---|---|
+| 1 | HVGKC-CELL | Built — full Configuration functionality |
+| 2 | Truck Cell 1 | Registered, not yet built (placeholder) |
+| 3 | Truck Cell 2 | Registered, not yet built (placeholder) |
+
+More tables can be added later (4, 5, ...) — this is a config change, not a code change. Any future section that needs to vary per table (Live Kitting Activities, History) should follow the same `table_id`-scoped pattern established in Configuration — see `FRD_CONFIGURATION.md` and `TSD_CONFIGURATION.md`.
+
 ## Navigation structure
 
 **Top nav (all pages):** Home · Live Kitting Activities · History · Configuration
 
-**Configuration sub-nav:** Current Kits Configuration · PQPR Analytics
+**Configuration section:**
+1. Entering "Configuration" from the top nav always lands on a **table-selection landing page** — a card per registered table (id + name shown), plus a "not yet configured" note on unbuilt tables. Clicking a card enters that table's configuration.
+2. Once inside a **built** table (currently only Table 1), a sub-nav appears with three tabs: **Current Kits Configuration · PQPR Analytics · Table Settings**, plus a "← Tables" link back to the landing page and a label showing which table you're in. The sub-nav is styled as a row of buttons (matching the top nav's look), with the active tab visually highlighted.
+3. Entering an **unbuilt** table (2 or 3) shows a simple "Configuration for `<table name>` not yet built." placeholder — no sub-nav, since there's nothing to navigate to yet.
 
-Active page/tab is visually highlighted. Every page also has a global **Back** button (top of the main content area) that returns to wherever the user came from — see `FRD_BASE_LAYOUT.md`.
+Active page/tab is visually highlighted throughout. Every page also has a global **Back** button (top of the main content area) that returns to wherever the user came from — see `FRD_BASE_LAYOUT.md`. On table-scoped pages, a **table badge** ("Table `<id>` — `<name>`") sits next to the Back button so it's always clear which table's configuration is being viewed.
 
 ## Page-by-page status
 
@@ -29,16 +44,21 @@ Active page/tab is visually highlighted. Every page also has a global **Back** b
 | Home | Shell only | Landing page |
 | Live Kitting Activities | Placeholder — needs Flask-SocketIO | View a real-time feed of kitting activity on the floor |
 | History | Placeholder — needs MongoDB | Look up past kitting activity/records |
-| Configuration → Current Kits Configuration | **Built** | Create, edit, search, and delete kit definitions (parts, cameras, alert rules) |
-| Configuration → PQPR Analytics | **Built** | Upload the PQPR Excel workbook; look up which components are in a kit, or which kits use a component |
+| Configuration (landing) | **Built** | Choose which table to configure |
+| Configuration → Table 1 (HVGKC-CELL) → Current Kits Configuration | **Built** | Create, edit, search, and delete kit definitions (parts, cameras, alert rules, per-camera alert toggles) |
+| Configuration → Table 1 (HVGKC-CELL) → PQPR Analytics | **Built** | Upload the PQPR Excel workbook; look up which components are in a kit, or which kits use a component |
+| Configuration → Table 1 (HVGKC-CELL) → Table Settings | **Built** | Configure per-table Audio Settings, Expected Client IP Addresses, and Push Notification Settings |
+| Configuration → Table 2 (Truck Cell 1) | Placeholder | — |
+| Configuration → Table 3 (Truck Cell 2) | Placeholder | — |
 
 ## Out of scope (not yet built)
 
+- Table 2 / Table 3 functionality (any of Current Kits Configuration, PQPR Analytics, Table Settings for those tables)
 - Real-time kitting activity feed (needs Flask-SocketIO wiring)
 - History browsing/audit trail (needs MongoDB integration for that blueprint)
 - Any authentication/authorization
 
 ## Where to look for more
 
-- Shell (header, nav, theming, back button, fit-to-screen behavior): `FRD_BASE_LAYOUT.md`
-- Configuration tab (both sub-tabs, full functional detail): `FRD_CONFIGURATION.md`
+- Shell (header, nav, theming, back button, table badge, sub-nav, fit-to-screen behavior): `FRD_BASE_LAYOUT.md`
+- Configuration section (table selection, both Table 1 sub-tabs, Table Settings, full functional detail): `FRD_CONFIGURATION.md`
