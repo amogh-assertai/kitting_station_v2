@@ -12,7 +12,40 @@
 {% block table_badge %}<span class="table-badge">Table {{ table_id }} — {{ table_name }}</span>{% endblock %}
 
 {% block content %}
-<div class="monitor-page">
+<div
+  class="monitor-page"
+  data-activity-id="{{ activity.id }}"
+  data-table-id="{{ table_id }}"
+  data-green-popup-uptime-sec="{{ green_popup_uptime_sec }}"
+  data-red-popup-uptime-sec="{{ red_popup_uptime_sec }}"
+>
+  <!-- Per-camera detection pop-up overlays: two fixed panes, NOT
+       nested inside a camera-panel. Absolutely positioned (see
+       monitor.css) to cover this entire page's height - Back button
+       row (base.html), monitor header, and camera panel - while
+       staying within their own camera's left/right half (client's
+       explicit call). monitor.js toggles [hidden] and shows/hides the
+       matching .camera-panel__body underneath for the configured
+       duration, then reverts. -->
+  <div class="detection-popup" data-popup data-cam="cam1" hidden>
+    <div class="detection-popup__image-area" data-popup-image-area>
+      <img class="detection-popup__image" data-popup-image alt="">
+    </div>
+    <div class="detection-popup__meta" data-popup-meta>
+      <span class="detection-popup__part" data-popup-part></span>
+      <span class="detection-popup__time" data-popup-time></span>
+    </div>
+  </div>
+  <div class="detection-popup" data-popup data-cam="cam2" hidden>
+    <div class="detection-popup__image-area" data-popup-image-area>
+      <img class="detection-popup__image" data-popup-image alt="">
+    </div>
+    <div class="detection-popup__meta" data-popup-meta>
+      <span class="detection-popup__part" data-popup-part></span>
+      <span class="detection-popup__time" data-popup-time></span>
+    </div>
+  </div>
+
   <div class="monitor-header">
     <span class="monitor-status-pill monitor-status-pill--{{ activity.status }}">
       {{ activity.status | replace("-", " ") | title }}
@@ -63,7 +96,8 @@
 
   <div class="monitor-cameras">
     {% for cam in [activity.cam1, activity.cam2] %}
-      <div class="camera-panel">
+      <div class="camera-panel" data-cam-id="{{ 'cam1' if loop.first else 'cam2' }}">
+        <div class="camera-panel__body" data-panel-body>
         <div class="camera-panel__header">
           <div class="camera-panel__title">
             <span class="camera-panel__icon" aria-hidden="true">&#9679;</span>
@@ -76,33 +110,55 @@
             >--:--:--</span>
             <button type="button" class="btn btn--secondary btn--small camera-panel__history-btn">History</button>
           </div>
-          <span class="camera-panel__kit-index">Kit #{{ cam.current_kit_index }}</span>
+          <div class="camera-panel__kit-index-group">
+            <span class="camera-panel__kit-index" data-kit-index-label>Kit #{{ cam.current_kit_index }}</span>
+            <!-- Green sound toggle - per-camera, per-activity (client's
+                 explicit call: does NOT touch the table's saved default
+                 in Table Settings, only this activity's own record).
+                 Red sound has no toggle - it always follows the
+                 table's saved default at playback time. Effective
+                 immediately for the current kit; state syncs live to
+                 every viewer via the "sound:toggled" socket event. -->
+            <button
+              type="button"
+              class="sound-toggle-btn {{ 'sound-toggle-btn--on' if cam.green_sound_enabled else 'sound-toggle-btn--off' }}"
+              data-sound-toggle
+              aria-pressed="{{ 'true' if cam.green_sound_enabled else 'false' }}"
+              title="Toggle detection sound for this camera"
+            >
+              <span data-sound-toggle-icon aria-hidden="true">{{ '\U0001F50A' if cam.green_sound_enabled else '\U0001F507' }}</span>
+            </button>
+          </div>
         </div>
 
         <div class="camera-panel__section camera-panel__section--completed">
-          Completed ({{ cam.completed_parts | length }})
+          Completed (<span data-completed-count>{{ cam.completed_parts | length }}</span>)
         </div>
-        <div class="camera-panel__cards">
+        <div class="camera-panel__cards" data-completed-cards>
           {% for part in cam.completed_parts %}
-            <div class="part-card part-card--completed">
+            <div class="part-card part-card--completed" data-part-name="{{ part.part_name }}">
               <span class="part-card__name">{{ part.part_name }}</span>
-              <span class="part-card__qty">Qty: {{ part.count }} / {{ part.quantity_required }}</span>
-              <span class="part-card__badge">Last detected</span>
+              <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+              {% if part.last_detected %}
+                <span class="part-card__badge">Last detected</span>
+              {% endif %}
             </div>
           {% endfor %}
         </div>
 
         <div class="camera-panel__section camera-panel__section--pending">
-          Pending ({{ cam.pending_parts | length }})
+          Pending (<span data-pending-count>{{ cam.pending_parts | length }}</span>)
         </div>
-        <div class="camera-panel__cards">
+        <div class="camera-panel__cards" data-pending-cards>
           {% for part in cam.pending_parts %}
-            <div class="part-card part-card--pending">
+            <div class="part-card part-card--pending" data-part-name="{{ part.part_name }}" data-required="{{ part.quantity_required }}">
               <span class="part-card__name">{{ part.part_name }}</span>
-              <span class="part-card__qty">Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+              <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
               <span class="part-card__warning" aria-hidden="true">&#9888;</span>
             </div>
           {% endfor %}
+        </div>
+        <span class="camera-panel__kit-index-hidden" data-kit-index-value hidden>{{ cam.current_kit_index }}</span>
         </div>
       </div>
     {% endfor %}
@@ -111,5 +167,11 @@
 {% endblock %}
 
 {% block extra_js %}
+<!-- Socket.IO client, self-hosted (app/static/js/vendor/socket.io.min.js)
+     rather than a CDN - this is an on-prem manufacturing HMI, and the
+     monitor page's live detection sync should not depend on the
+     station having outbound internet access at runtime. Version 4.7.5
+     matches Flask-SocketIO 5.3.x's default protocol (Socket.IO v4). -->
+<script src="{{ url_for('static', filename='js/vendor/socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
 {% endblock %}

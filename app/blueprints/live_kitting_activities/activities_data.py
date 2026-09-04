@@ -195,7 +195,13 @@ def _validate_create_payload(payload):
     }
 
 
-def create_live_activity(activities_collection, kits_collection, payload, camera_images):
+def create_live_activity(
+    activities_collection,
+    kits_collection,
+    payload,
+    camera_images,
+    table_settings_collection=None,
+):
     """Finalizes an activity: re-validates everything server-side (the
     2-step flow only carries data through hidden form fields / query
     params - nothing before this point is trusted), re-fetches the kit
@@ -203,6 +209,19 @@ def create_live_activity(activities_collection, kits_collection, payload, camera
     parts_configured snapshot (never trust a parts array round-tripped
     through the browser), and inserts one live_activity_details doc with
     status "live".
+
+    table_settings_collection (optional - the `table_configuration`
+    collection from configuration/table_settings_data.py): when passed,
+    that table's ENTIRE Table Settings document (audio_settings,
+    expected_client_ips, push_notification_emails, push_notifications)
+    is snapshotted as-is under this activity's "table_settings" key.
+    This is a one-time copy, same convention as parts_configured -
+    later edits to Table Settings do NOT retroactively change an
+    already-created activity's snapshot. Optional (defaults to None) so
+    any existing caller that doesn't pass it keeps working exactly as
+    before, just without the new field - not yet used elsewhere in this
+    build (client's explicit note: "we will use that in next
+    iteration"), so no other code depends on it existing.
 
     camera_images: {"cam1": str, "cam2": str} - static paths for now.
     """
@@ -226,6 +245,22 @@ def create_live_activity(activities_collection, kits_collection, payload, camera
             "The selected kit no longer exists on this table - re-enter the EDP number."
         )
 
+    table_settings_snapshot = None
+    if table_settings_collection is not None:
+        table_settings_snapshot = _snapshot_table_settings(
+            table_settings_collection, data["table_id"]
+        )
+
+    # Green sound toggle - per-camera, per-activity, mutable after
+    # creation (see cv_ingest/detection_data.toggle_green_sound()).
+    # Seeded from the table's saved default_enabled at creation time
+    # only - flipping this later never writes back to table_configuration
+    # (client's explicit instruction: "don't change in default"). Red
+    # sound has no equivalent field here - it always reads
+    # table_settings.audio_settings.camera_{N}_red.default_enabled
+    # directly at playback time, never toggleable per-activity.
+    green_sound_defaults = _default_green_sound_enabled(table_settings_snapshot)
+
     now = _now_iso()
     doc = {
         "table_id": data["table_id"],
@@ -242,12 +277,70 @@ def create_live_activity(activities_collection, kits_collection, payload, camera
         },
         "current_kit_index_cam1": 1,
         "current_kit_index_cam2": 1,
+        "green_sound_enabled_cam1": green_sound_defaults["cam1"],
+        "green_sound_enabled_cam2": green_sound_defaults["cam2"],
         "status": STATUS_LIVE,
         "created_at": now,
         "updated_at": now,
     }
+    if table_settings_snapshot is not None:
+        doc["table_settings"] = table_settings_snapshot
+
     result = activities_collection.insert_one(doc)
     return str(result.inserted_id)
+
+
+def _default_green_sound_enabled(table_settings_snapshot):
+    """Reads camera_1_green / camera_2_green's default_enabled from the
+    table_settings snapshot (or the module-wide DEFAULT_ENABLED=True
+    fallback used throughout table_settings_data.py, if no snapshot was
+    taken or the table never saved Audio Settings) - this becomes the
+    STARTING value for this activity's green sound toggles, which the
+    operator can then flip independently per camera without ever
+    touching the table's saved default."""
+    DEFAULT_ENABLED = True  # mirrors table_settings_data.DEFAULT_ENABLED
+    if not table_settings_snapshot:
+        return {"cam1": DEFAULT_ENABLED, "cam2": DEFAULT_ENABLED}
+
+    audio_settings = table_settings_snapshot.get("audio_settings", {})
+    return {
+        "cam1": audio_settings.get("camera_1_green", {}).get("default_enabled", DEFAULT_ENABLED),
+        "cam2": audio_settings.get("camera_2_green", {}).get("default_enabled", DEFAULT_ENABLED),
+    }
+
+
+def _snapshot_table_settings(table_settings_collection, table_id):
+    """Reads the table's Table Settings document (from
+    configuration/table_settings_data.py's `table_configuration`
+    collection) and returns a plain dict copy for embedding into the
+    new activity - organized under a single "table_settings" key so
+    everything (audio, IPs, emails, notifications) is grouped together
+    rather than spread across top-level fields on the activity doc.
+
+    Uses find_one directly rather than importing
+    table_settings_data.get_table_config() - that function lives in the
+    configuration blueprint, and blueprints stay decoupled from each
+    other in this codebase (same convention already followed for the
+    duplicated _require_built_table() guard). The empty-skeleton
+    fallback below mirrors get_table_config()'s shape exactly, so a
+    table with no Table Settings saved yet still gets a
+    consistently-shaped (if empty) snapshot rather than a missing key.
+    """
+    doc = table_settings_collection.find_one({"table_id": table_id})
+    if not doc:
+        return {
+            "audio_settings": {},
+            "expected_client_ips": [],
+            "push_notification_emails": [],
+            "push_notifications": {},
+        }
+
+    return {
+        "audio_settings": doc.get("audio_settings", {}),
+        "expected_client_ips": doc.get("expected_client_ips", []),
+        "push_notification_emails": doc.get("push_notification_emails", []),
+        "push_notifications": doc.get("push_notifications", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -263,12 +356,23 @@ def get_activity_by_id(collection, activity_id):
 
 def build_monitor_view(doc):
     """Shapes a raw live_activity_details doc into the monitor page's
-    per-camera structure. Splits parts_configured by camera, and starts
-    every part's detected count at 0 (confirmed scope: this is a UI-only
-    build - progress counts are not yet driven by real detection events,
-    that wiring is a later build). A part is "completed" once its count
-    reaches quantity_required; all parts currently start pending since
-    count is always 0 here.
+    per-camera structure. Splits parts_configured by camera.
+
+    Per-part counts and the "last detected" badge are read directly off
+    this SAME document (part_counts_cam{1,2}, last_detected_cam{1,2} -
+    see cv_ingest/detection_data.py) - no second collection, no extra
+    query. That's the whole point of the embedded schema: one
+    find_one({"_id": activity_id}) (already done by the caller in
+    routes.py) is all that's needed here.
+
+    A part with no entry yet in part_counts_cam{N} for the CURRENT kit
+    index defaults to 0 - this is what makes the UI show a fresh/reset
+    state for a new kit after validate_kit advances the index, without
+    anything having been deleted (the old kit index's counts are still
+    sitting in part_counts_cam{N}, just not read here since only the
+    current kit's numbers are ever shown live).
+
+    A part is "completed" once its count reaches quantity_required.
 
     The progress bar/percent is NOT derived from part quantities - it
     tracks kits packed so far (current_kit_index_cam{1,2}) against the
@@ -279,23 +383,35 @@ def build_monitor_view(doc):
 
     target = doc.get("quantity_required", 0)
 
-    def _parts_for_camera(camera):
+    def _detected_count(camera, kit_index, part_name):
+        return (
+            doc.get(f"part_counts_{camera}", {})
+            .get(str(kit_index), {})
+            .get(part_name, 0)
+        )
+
+    def _parts_for_camera(camera, kit_index):
         parts = []
         for part in doc.get("parts_configured", []):
             if part.get("camera") != camera:
                 continue
             required = part.get("quantity_required", 0)
-            count = 0  # static for this UI-only build - not yet wired to detections
+            part_name = part.get("part_name")
+            count = _detected_count(camera, kit_index, part_name)
+            is_last_detected = (
+                doc.get(f"last_detected_{camera}", {}) or {}
+            ).get("part_name") == part_name
             parts.append({
-                "part_name": part.get("part_name"),
+                "part_name": part_name,
                 "count": count,
                 "quantity_required": required,
                 "completed": count >= required and required > 0,
+                "last_detected": is_last_detected,
             })
         return parts
 
     def _camera_summary(camera, kit_index):
-        parts = _parts_for_camera(camera)
+        parts = _parts_for_camera(camera, kit_index)
         completed = [p for p in parts if p["completed"]]
         pending = [p for p in parts if not p["completed"]]
         percent = round((kit_index / target) * 100, 2) if target else 0.0
@@ -307,6 +423,11 @@ def build_monitor_view(doc):
             "total_count": kit_index,
             "total_required": target,
             "percent": percent,
+            # Green sound toggle state - per-camera, per-activity (see
+            # cv_ingest/detection_data.toggle_green_sound()). Red sound
+            # has no toggle; it always reads the table_settings snapshot's
+            # default_enabled directly at playback time.
+            "green_sound_enabled": doc.get(f"green_sound_enabled_{camera}", True),
         }
 
     return {

@@ -1,6 +1,9 @@
 # TSD — Kitting Station v2 (Whole App)
 
-Technical architecture at the app level. For shell implementation detail, see `TSD_BASE_LAYOUT.md`. For Configuration blueprint detail (table registry, routes, MongoDB schemas, data flow), see `TSD_CONFIGURATION.md`. For Live Kitting Activities blueprint detail, see `TSD_LIVE_KITTING_ACTIVITIES.md`.
+Technical architecture at the app level. For shell implementation detail,
+see `TSD_BASE_LAYOUT.md`. For Configuration blueprint detail, see
+`TSD_CONFIGURATION.md`. For Live Kitting Activities and the new
+detection-ingest blueprint, see `TSD_LIVE_KITTING_ACTIVITIES.md`.
 
 ## Stack (fixed — do not change without asking the client/owner)
 
@@ -8,164 +11,148 @@ Technical architecture at the app level. For shell implementation detail, see `T
 |---|---|
 | Backend | Flask, Blueprints |
 | Templates | Jinja2, server-rendered |
-| Real-time | Flask-SocketIO — **not wired yet** |
-| Database | MongoDB (`kitting_station_v2`) — **connected for Current Kits Configuration, Table Settings, and Live Kitting Activities**; History does not use it yet |
+| Real-time | **Flask-SocketIO — now wired.** Powers live detection pop-ups, kit-advance sync, and sound-toggle sync on the Live Kitting Activities monitor page. See `TSD_LIVE_KITTING_ACTIVITIES.md`. |
+| Database | MongoDB (`kitting_station_v2`) — connected for Current Kits Configuration, Table Settings, and Live Kitting Activities (including all detection data, embedded — no separate detection collection); History does not use it yet |
 | CSS | Plain CSS + custom properties. No Tailwind/Bootstrap, no build step |
-| JS | Vanilla JS only. No framework, no bundler, no inline `<script>` in templates |
+| JS | Vanilla JS only. No framework, no bundler, no inline `<script>` in templates. One exception: `app/static/js/vendor/socket.io.min.js` is a self-hosted third-party library (see below) |
 | Config | `config.yaml` (non-secret) + `.env` (secrets), merged by a loader module. No hardcoded values in app code |
-| File storage | Filesystem (`data/`), namespaced per `table_id` — used for PQPR upload and Table Settings' audio uploads |
+| File storage | Filesystem (`data/`), namespaced per `table_id` — used for PQPR upload, Table Settings' audio uploads, and (new) saved detection frames |
 
 ## Project structure
 
 ```
 station_monitor/
-├── app.py                          # entry point
-├── config.yaml                     # non-secret runtime config
-├── .env / .env.example             # secrets
+├── app.py                          # entry point - now calls socketio.run(app, ...) instead of app.run(...)
+├── config.yaml
+├── .env / .env.example
 ├── requirements.txt
 ├── data/
-│   ├── pqpr/table_<id>/            # PQPR file + parsed cache per table (gitignored except .gitkeep)
-│   └── audio/table_<id>/           # Table Settings audio files per table, one per slot (gitignored)
+│   ├── pqpr/table_<id>/
+│   ├── audio/table_<id>/
+│   └── detections/table_<id>/      # NEW - saved detection frames, <uuid4hex><ext>
 ├── app/
-│   ├── __init__.py                 # app factory: registers blueprints, context processors, calls init_mongo()
+│   ├── __init__.py                 # app factory: now also calls socketio.init_app(app)
+│   ├── extensions.py                # NEW - shared `socketio = SocketIO(...)` singleton
 │   ├── config/
-│   │   ├── loader.py               # merges config.yaml + .env, fail-fast validation
-│   │   └── db.py                   # MongoDB client setup (lazy connection)
+│   │   ├── loader.py                # merges config.yaml + .env; now also validates live_kitting.*
+│   │   └── db.py
 │   ├── blueprints/
 │   │   ├── home/
 │   │   ├── live_kitting_activities/
-│   │   │   ├── routes.py               # landing, create flow (2 steps), monitor page, complete-manually - all routes for this blueprint
-│   │   │   └── activities_data.py      # MongoDB data access + validation (live_activity_details, activity_history); reads current_kit_configurations read-only for EDP lookup
+│   │   │   ├── routes.py               # + passes table_configuration collection into create_live_activity()
+│   │   │   └── activities_data.py      # + table_settings snapshot, green sound toggle seeding, real detection counts in build_monitor_view()
+│   │   ├── cv_ingest/                   # NEW blueprint - detection ingest from local DeepStream app
+│   │   │   ├── __init__.py             # no url_prefix; routes are /api/...
+│   │   │   ├── routes.py               # /api/detection-update, /api/validate-kit, /api/toggle-sound, /api/detection-image/<dir>/<file>
+│   │   │   └── detection_data.py       # validation, image save, count/sound resolution, Mongo writes
 │   │   ├── history/
 │   │   └── configuration/
-│   │       ├── routes.py               # all configuration routes (landing, PQPR, Current Kits, Table Settings) - all table_id-scoped
-│   │       ├── pqpr_parser.py          # Excel -> JSON parser for PQPR
-│   │       ├── current_kits_data.py    # MongoDB data access + validation for Current Kits (current_kit_configurations)
-│   │       └── table_settings_data.py  # MongoDB data access + validation for Table Settings (table_configuration)
 │   ├── templates/
-│   │   ├── base.html               # shell: header/nav/back-button+table-badge row/subnav block/main/footer
-│   │   └── <blueprint_name>/*.html
+│   │   ├── base.html
+│   │   └── <blueprint_name>/*.html     # live_kitting_activities/monitor.html now includes detection pop-ups + sound toggle UI
 │   └── static/
-│       ├── css/                    # one file per concern (see below)
-│       ├── js/                     # one file per concern (see below)
+│       ├── css/
+│       │   └── monitor.css             # + detection pop-up, sound toggle styling
+│       ├── js/
+│       │   ├── monitor.js              # + Socket.IO client wiring, sound playback
+│       │   └── vendor/
+│       │       └── socket.io.min.js    # NEW - self-hosted Socket.IO v4.7.5 client
 │       └── images/watts_logo.png
 ```
 
 ## Config system
 
-### `config.yaml` (non-secret)
+### `config.yaml` additions
+
 ```yaml
-app:        { name, version, host, port, debug }
-client:     { name, brand, logo_path }
-developer:  { name }
-theme:      { default, cookie_name, cookie_max_age_days }
-storage:
-  pqpr_dir: "data/pqpr"
-  pqpr_allowed_extensions: [".xlsx", ".xls"]
-  max_upload_size_mb: 20
-  audio_dir: "data/audio"
-  audio_allowed_extensions: [".mp3"]
 mongodb:
-  db_name: "kitting_station_v2"
   collections:
     current_kits: "current_kit_configurations"
     table_configuration: "table_configuration"
     live_activities: "live_activity_details"
     activity_history: "activity_history"
-pqpr_parsing:
-  sheet_name: "PQPR - FG -- Copy"
-  header_row: 1
-  kit_name_column: "B"
-  edp_column: "C"
-  component_start_column: "H"
-  top10_row_count: 10
-configuration:
-  tables:
-    - id: 1
-      name: "HVGKC-CELL"
-      built: true
-    - id: 2
-      name: "Truck Cell 1"
-      built: false
-    - id: 3
-      name: "Truck Cell 2"
-      built: false
+    # NOTE: an earlier pass in this build added a "detection_events"
+    # collection here. It was REMOVED — detection data is embedded on
+    # live_activity_details instead (client's explicit decision: one
+    # activity_id must return the complete picture via a single
+    # find_one, no join). Do not re-add a detection_events entry
+    # without re-confirming that decision with the client.
+
+# NEW section - detection ingest tuning
+live_kitting:
+  green_popup_uptime_sec: 2      # how long the green detection pop-up stays on screen
+  red_popup_uptime_sec: 3        # separately configurable from green (client's explicit call)
+  detection_image_dir: "data/detections"
+  allowed_image_extensions: [".jpg", ".jpeg", ".png"]
 ```
 
-`configuration.tables` is the **table registry** — the single source of truth for which tables exist, their display names, and whether they have real functionality (`built: true`) or show a placeholder (`built: false`). Adding table 4/5 later is purely a config change: append an entry here, nothing in code needs to change for it to show up on the landing page (though its routes will still 404/placeholder until a `built: true` table's worth of routes/templates/data-layer functions are actually written for it, following the Table 1 pattern in `TSD_CONFIGURATION.md`).
+`app/config/loader.py`'s `_validate_settings()` fail-fast check now also
+covers `mongodb.collections.activity_history`,
+`live_kitting.green_popup_uptime_sec`, `live_kitting.red_popup_uptime_sec`,
+`live_kitting.detection_image_dir`, and
+`live_kitting.allowed_image_extensions`.
 
-### `.env` (secrets)
-```
-SECRET_KEY=...
-FLASK_ENV=development
-MONGO_URI=mongodb://localhost:27017/
-```
+### `.env` — unchanged
 
-`app/config/loader.py`:
-- `load_settings()` reads both, merges, and **fails fast** (raises `ValueError`) if any required key is missing, including `MONGO_URI` — check `_validate_settings()` before adding new config sections, extend `required_paths` there. *(Note: `configuration.tables` was added without editing this file in the session that introduced it — confirm whether fail-fast validation should cover it too.)*
-- Exposes `BASE_DIR` (project root) as a module-level constant.
+### Runtime access — `app/__init__.py`'s `create_app()`
 
-### `app/config/db.py`
-- `init_mongo(app, settings)` creates a `MongoClient` and stashes `app.config["MONGO_CLIENT"]` / `app.config["MONGO_DB"]`.
-- **Connection is lazy** — pymongo doesn't open a socket until the first operation, matching how the rest of the app doesn't eagerly touch external state at startup. Routes using the DB catch `pymongo.errors.PyMongoError` and return a clean JSON/HTML error instead of a 500 stack trace.
+Same as before, plus:
+- Calls `socketio.init_app(app)` (the `socketio` object lives in the new
+  `app/extensions.py`, not created inline — this keeps `create_app()`'s
+  signature unchanged, so nothing that already calls it needs to change).
+- Registers the new `cv_ingest_bp` alongside the existing four
+  blueprints.
 
-### Runtime access
-`app/__init__.py`'s `create_app()`:
-- Stores full settings dict at `app.config["SETTINGS"]`.
-- Stores `app.config["BASE_DIR"]`, `app.config["SECRET_KEY"]`, `app.config["MAX_CONTENT_LENGTH"]`.
-- Calls `init_mongo(app, settings)`.
-- A `context_processor` injects theme + branding variables into **every** template automatically — see `TSD_BASE_LAYOUT.md` for the full list.
+`app.py` calls `socketio.run(app, host=..., port=..., debug=...,
+allow_unsafe_werkzeug=True)` instead of `app.run(...)` — this is the
+only other file that needed to change for Socket.IO to work end to end.
 
 ## Blueprint routing pattern
 
-Each blueprint: `blueprints/<name>/__init__.py` (creates the `Blueprint`, imports `routes` at the bottom to avoid circular imports) + `routes.py`. Templates live in a matching `templates/<name>/` folder. `active_page` is passed into every render so `base.html` can highlight the right top-nav item.
-
-Configuration blueprint is **table_id-scoped end to end**: every URL under `/configuration/table/<int:table_id>/...` (except the landing page itself), every Mongo document, and every filesystem path carries `table_id`. See `TSD_CONFIGURATION.md` for the full route table and the `_require_built_table()` guard pattern. Configuration also has a second nav level (`active_subtab` + `_subnav.html`) — see `TSD_BASE_LAYOUT.md` for the pattern.
-
-Live Kitting Activities follows the same `table_id`-scoping and `_require_built_table()` guard convention (duplicated locally in its own `routes.py` rather than imported, keeping blueprints decoupled) — see `TSD_LIVE_KITTING_ACTIVITIES.md` for its full route table and MongoDB schemas.
-
-**If a future blueprint (e.g. History) needs to vary per table, follow the same conventions**: `table_id` as a URL path parameter, a table-registry lookup + `built` guard before rendering, `table_id` stored on any Mongo documents it writes, and (if it needs file storage) a `data/<concern>/table_<id>/` directory.
+Unchanged general pattern (see `TSD_CONFIGURATION.md` /
+`TSD_LIVE_KITTING_ACTIVITIES.md` for the `_require_built_table()`
+convention). The new `cv_ingest` blueprint follows the same
+duplicated-guard convention as every other blueprint, and registers with
+**no `url_prefix`** since its own routes are already prefixed `/api/...`
+at the individual route level.
 
 ## Frontend architecture
 
-### CSS (`app/static/css/`, one file per concern)
+### CSS — no new global files; `monitor.css` (page-specific, unchanged
+loading convention via `{% block extra_css %}`) gained substantial new
+rules this revision — see `TSD_LIVE_KITTING_ACTIVITIES.md` for the
+detection pop-up layout details and the padding-ownership lesson learned
+while building it.
 
-**Globally linked** in `base.html`'s `<head>`:
-`reset.css` → `variables.css` → `layout.css` → `nav.css` → `branding.css` → `subnav.css` → `upload-widget.css` → `split-panels.css` → `kits-table.css` → `kit-form.css` → `back-button.css`
+### JS
 
-**Page-specific**, loaded via `{% block extra_css %}` only on the pages that need them (same reasoning as `extra_js` below — a page-specific concern doesn't belong in the global chain):
-| File | Loaded on |
-|---|---|
-| `config-landing.css` | Configuration landing page, table placeholder page |
-| `table-settings.css` | Table Settings page |
-| `live-activities.css` | Live Kitting Activities landing, create (step 1), camera-check (step 2) |
-| `monitor.css` | Live Kitting Activities monitor page only — includes the `.app-main--full-bleed` override (see `TSD_LIVE_KITTING_ACTIVITIES.md`) |
-
-### JS (`app/static/js/`, no bundler, plain `<script src>` tags, all page-specific via `{% block extra_js %}`)
 | File | Loaded | Purpose |
 |---|---|---|
-| `theme-toggle.js` | global | Theme flip + cookie persistence |
-| `back-button.js` | global | Browser-history-based back navigation |
-| `pqpr-upload.js` | PQPR Analytics page | Upload/replace/download AJAX |
-| `pqpr-search.js` | PQPR Analytics page | Two-panel component/kit search |
-| `current-kits.js` | Current Kits list page | Live search, delete, row rendering |
-| `kit-form.js` | Create/Edit kit page | Dynamic part/neglect-part rows, camera alert config, AJAX save |
-| `table-settings.js` | Table Settings page | Deferred audio save + preview, staged IP list, staged email list + notification toggles |
-| `live-activity-create.js` | Live Kitting Activities create page (step 1) | Enter-to-advance focus, EDP AJAX lookup, table-busy check on submit |
-| `live-activities-list.js` | Live Kitting Activities landing page | Local-timezone start-time formatting, Complete Manually inline confirm + AJAX, View Monitor navigation |
-| `monitor.js` | Live Kitting Activities monitor page | Live-ticking elapsed-time timers (header Total Time + both camera panels) |
+| `vendor/socket.io.min.js` | Live Kitting Activities monitor page only | Self-hosted Socket.IO v4.7.5 client — **not** loaded from a CDN. This is an on-prem manufacturing HMI; live detection sync should not depend on outbound internet access at runtime. Pulled from the official `socket.io-client` npm package. |
+| `monitor.js` | Live Kitting Activities monitor page only | Timers (unchanged) + Socket.IO room join + live pop-up rendering + sound playback + sound-toggle click handling |
 
-**Convention:** any new AJAX feature follows the same pattern — endpoint URLs generated server-side with `url_for()` (always including `table_id` for Configuration routes), exposed via `data-*` attributes on a container element, read by an isolated JS file with a single `DOMContentLoaded` listener. Never hardcode a URL in JS.
+**Convention reminder for any future AJAX/socket feature:** endpoint
+URLs generated server-side with `url_for()` and exposed via `data-*`
+attributes, never hardcoded in JS. The detection pop-up's image URL and
+audio URL both follow this — `cv_ingest/routes.py` builds them via
+`url_for()` (reusing the existing
+`configuration.table_settings_audio_file` route for audio, rather than
+duplicating file-serving logic) and sends them over the socket payload;
+`monitor.js` just uses whatever URL it's given.
 
 ## Known gaps / next-session TODO
 
-- Flask-SocketIO not wired anywhere yet — Live Kitting Activities' monitor page has live-looking elements (timers, progress bars) but they update via client-side JS against server-rendered static data, not a real push channel. Wiring real detection counts will likely need this, or another push mechanism.
-- Live Kitting Activities: every part's detected count is hardcoded to 0 — no CV/detection ingest path exists yet. See `TSD_LIVE_KITTING_ACTIVITIES.md` for the fuller list of gaps specific to that blueprint (per-kit timers, placeholder buttons, missing color tokens).
+Carried over from before this revision, still open:
 - MongoDB not connected for History yet.
 - No authentication/authorization layer.
-- No flash-message system exists yet — silent-redirect is used instead where a message would normally go (e.g. editing a kit that no longer exists).
-- PQPR storage is single-file-overwrite-per-table by design (client's explicit choice) — version history would be a deliberate scope change, confirm with client first.
-- Table Settings' audio storage is single-file-overwrite-per-slot-per-table, same convention as PQPR.
-- Current Kits part-name search uses an unindexed Mongo regex — fine at current scale; add a text index if it grows large and search feels slow.
-- `app/config/loader.py`'s `_validate_settings()` includes `configuration.tables` and both Live Kitting Activities collections (`live_activities`, `activity_history`) in its required-paths fail-fast check.
-- Tables 2 and 3 are registry-only — no Current Kits Configuration, PQPR Analytics, Table Settings, or Live Kitting Activities functionality exists for them yet. Building it out is a matter of repeating the Table 1 pattern (routes, templates, data-layer functions already all take `table_id` as a parameter) and flipping `built: true` in `config.yaml`.
+- No flash-message system — silent-redirect used instead where a
+  message would normally go.
+- PQPR and Table Settings' audio storage remain single-file-overwrite by
+  design.
+- Current Kits part-name search still uses an unindexed Mongo regex.
+- Tables 2 and 3 are registry-only.
+
+New from this revision — see `TSD_LIVE_KITTING_ACTIVITIES.md`'s own
+"Known gaps" section for the full list (red-alert-type logic, per-kit
+timers, a join-before-emit race on the socket connection, audio
+playback not yet verified with real MP3 files in a real browser, etc.).

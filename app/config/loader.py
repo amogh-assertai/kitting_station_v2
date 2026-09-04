@@ -72,6 +72,7 @@ def _validate_settings(settings: dict) -> None:
         ("mongodb", "collections", "current_kits"),
         ("mongodb", "collections", "table_configuration"),
         ("mongodb", "collections", "live_activities"),
+        ("mongodb", "collections", "activity_history"),
         ("pqpr_parsing", "sheet_name"),
         ("pqpr_parsing", "header_row"),
         ("pqpr_parsing", "kit_name_column"),
@@ -82,6 +83,10 @@ def _validate_settings(settings: dict) -> None:
         ("theme", "default"),
         ("theme", "cookie_name"),
         ("theme", "cookie_max_age_days"),
+        ("live_kitting", "green_popup_uptime_sec"),
+        ("live_kitting", "red_popup_uptime_sec"),
+        ("live_kitting", "detection_image_dir"),
+        ("live_kitting", "allowed_image_extensions"),
     ]
     for path in required_paths:
         node = settings

@@ -62,3 +62,18 @@ features:
   live_kitting_activities: true
   history: true
   configuration: true
+
+# Live detection ingest (CV-side, from the local DeepStream application).
+# Detections are stored embedded on each live_activity_details document
+# itself (part_counts_cam{1,2}, last_detected_cam{1,2}, detections -
+# see app/blueprints/cv_ingest/detection_data.py) rather than a separate
+# collection - one activity_id always returns the complete picture.
+# green_popup_uptime_sec: how long a correct-part-detected pop-up stays
+# on screen client-side (monitor.js reads this via a data-* attribute -
+# never hardcode it in JS). detection_image_dir: filesystem root for
+# saved detection frames, namespaced per table_id same as pqpr_dir/audio_dir.
+live_kitting:
+  green_popup_uptime_sec: 2
+  red_popup_uptime_sec: 3
+  detection_image_dir: "data/detections"
+  allowed_image_extensions: [".jpg", ".jpeg", ".png"]

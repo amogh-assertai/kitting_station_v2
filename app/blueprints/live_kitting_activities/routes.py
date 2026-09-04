@@ -60,6 +60,12 @@ def _kits_collection():
     return db[collection_name]
 
 
+def _table_settings_collection():
+    db = current_app.config["MONGO_DB"]
+    collection_name = current_app.config["SETTINGS"]["mongodb"]["collections"]["table_configuration"]
+    return db[collection_name]
+
+
 def _activity_history_collection():
     db = current_app.config["MONGO_DB"]
     collection_name = current_app.config["SETTINGS"]["mongodb"]["collections"]["activity_history"]
@@ -221,6 +227,7 @@ def finalize():
             _kits_collection(),
             payload,
             CAMERA_CHECK_IMAGES,
+            table_settings_collection=_table_settings_collection(),
         )
     except activities_data.ValidationError as exc:
         # No flash-message system yet (same known gap as the rest of the
@@ -319,4 +326,6 @@ def monitor(activity_id):
         activity=view,
         table_id=view["table_id"],
         table_name=view["table_name"],
+        green_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["green_popup_uptime_sec"],
+        red_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["red_popup_uptime_sec"],
     )

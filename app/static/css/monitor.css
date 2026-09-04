@@ -14,10 +14,19 @@
    page is affected. */
 
 .app-main.app-main--full-bleed {
+  position: relative; /* anchors the per-camera detection pop-up so it
+                          can cover the ENTIRE app-main box - Back
+                          button row, monitor header, and camera panel -
+                          not just the camera panel. Padding lives on
+                          .app-main__top-row and .monitor-page instead
+                          (see below), not here, so this element itself
+                          has zero padding for the pop-up's "inset: 0"
+                          to land on cleanly - same lesson learned from
+                          the camera-panel padding issue earlier. */
   max-width: none;
   width: 100%;
   margin: 0;
-  padding: var(--spacing-md);
+  padding: 0;
   border-left: none;
   border-right: none;
   border-radius: 0;
@@ -28,6 +37,7 @@
 
 .app-main.app-main--full-bleed .app-main__top-row {
   flex: 0 0 auto;
+  padding: var(--spacing-md) var(--spacing-md) 0;
 }
 
 .monitor-page {
@@ -36,6 +46,39 @@
   gap: var(--spacing-md);
   flex: 1;
   min-height: 0;
+  padding: 0 var(--spacing-md) var(--spacing-md);
+}
+
+/* ---------- Per-camera detection pop-up overlay ----------
+   Two fixed panes, siblings of .monitor-page (not nested inside a
+   camera-panel), absolutely positioned against .app-main--full-bleed
+   so each one can cover the FULL height of the page - Back button row,
+   monitor header (status/progress/order), and the camera panel below -
+   while staying strictly within its own camera's left/right half
+   (client's explicit call: full page height, but never crossing into
+   the other camera's column). left/right split matches
+   .monitor-cameras' 2-column grid with the same gap between them. */
+
+.detection-popup {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  animation: detection-popup-in 0.15s ease-out;
+}
+
+.detection-popup[data-cam="cam1"] {
+  left: 0;
+  right: calc(50% + var(--spacing-md) / 2);
+}
+
+.detection-popup[data-cam="cam2"] {
+  left: calc(50% + var(--spacing-md) / 2);
+  right: 0;
 }
 
 /* ---------- Header: status pill, dual progress bars, order info ---------- */
@@ -160,9 +203,111 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background-color: var(--color-surface);
-  padding: var(--spacing-md);
-  overflow-y: auto;
+  overflow: hidden;
   min-height: 0;
+}
+
+.camera-panel__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-md);
+}
+
+/* The [hidden] attribute is normally display:none via the browser's UA
+   stylesheet, but that rule and ".detection-popup { display: flex }"
+   above have equal specificity - without this override, source order
+   (this stylesheet loads after the UA stylesheet) lets "display: flex"
+   win, so the popup showed on every page load regardless of the
+   hidden attribute. This rule restores hidden's precedence explicitly,
+   so the panel's normal completed/pending content (camera-panel__body)
+   is what's visible by default - the popup only appears when
+   monitor.js removes the hidden attribute on a live detection event. */
+.detection-popup[hidden] {
+  display: none;
+}
+
+@keyframes detection-popup-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Whole pop-up is theme-tinted (not just the metadata strip) - image
+   area gets a darker shade of the same hue so the part photo still
+   reads clearly against it, metadata strip gets the full-saturation
+   color. No --color-success/--color-danger tokens exist yet in
+   variables.css (same known gap flagged in
+   TSD_LIVE_KITTING_ACTIVITIES.md for the Complete Manually button) -
+   hardcoded here to match that same color family. */
+
+.detection-popup--green {
+  background-color: #0f6e56;
+}
+
+.detection-popup--green .detection-popup__image-area {
+  background-color: #0a4a3a;
+}
+
+.detection-popup--green .detection-popup__meta {
+  background-color: #1d9e75;
+  color: #ffffff;
+}
+
+.detection-popup--red {
+  background-color: #8f1d1d;
+}
+
+.detection-popup--red .detection-popup__image-area {
+  background-color: #5c1414;
+}
+
+.detection-popup--red .detection-popup__meta {
+  background-color: #dc2626;
+  color: #ffffff;
+}
+
+.detection-popup__image-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.detection-popup__image {
+  width: 100%;
+  height: 100%;
+  /* object-fit: cover (not contain) - the pop-up box itself is a fixed
+     full-panel size (client requirement), and different camera image
+     aspect ratios must never leave a visible gap/letterbox against the
+     image-area's background. cover fills the box completely, cropping
+     the image's edges as needed rather than shrinking it to fit. */
+  object-fit: cover;
+}
+
+.detection-popup__meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  font-weight: 600;
+}
+
+.detection-popup__part {
+  flex: 1;
+  text-align: center;
+  font-size: 1.125rem;
+}
+
+.detection-popup__time {
+  margin-left: auto;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
 }
 
 .camera-panel__header {
@@ -194,6 +339,40 @@
 .camera-panel__kit-index {
   font-size: 0.8125rem;
   color: var(--color-text-muted);
+}
+
+.camera-panel__kit-index-group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.sound-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-bg);
+  cursor: pointer;
+  font-size: 0.9375rem;
+  line-height: 1;
+  transition: var(--transition-theme);
+}
+
+.sound-toggle-btn--on {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent-hover-bg);
+}
+
+.sound-toggle-btn--off {
+  opacity: 0.6;
+}
+
+.sound-toggle-btn:hover {
+  opacity: 1;
 }
 
 .camera-panel__section {

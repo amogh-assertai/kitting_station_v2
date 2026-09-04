@@ -1,154 +1,489 @@
 # TSD — Live Kitting Activities
 
-Technical spec for the Live Kitting Activities blueprint: routes, MongoDB collections/schemas, data flow, and known gaps. For functional behavior, see `FRD_LIVE_KITTING_ACTIVITIES.md`.
+Technical spec for the Live Kitting Activities blueprint and the new
+`cv_ingest` blueprint that feeds it live detection data. For functional
+behavior, see `FRD_LIVE_KITTING_ACTIVITIES.md`.
+
+**Status: detection wiring is now built.** Part counts, the completed/
+pending split, and per-camera sound are all driven by real events posted
+from the local DeepStream application — this is no longer a UI-only stub.
 
 ## File map
 
 ```
 app/blueprints/live_kitting_activities/
-├── __init__.py                  # blueprint registration (unchanged since Task 1 stub)
-├── routes.py                    # all HTTP routes for this blueprint
-└── activities_data.py           # MongoDB data access + validation
+├── __init__.py
+├── routes.py                    # landing, create flow, monitor page, complete-manually
+└── activities_data.py           # MongoDB data access + validation; monitor view shaping
+
+app/blueprints/cv_ingest/         # NEW blueprint - detection ingest, no url_prefix (routes are /api/...)
+├── __init__.py
+├── routes.py                    # /api/detection-update, /api/validate-kit, /api/toggle-sound,
+│                                 # /api/detection-image/<dir>/<file>, Socket.IO room join
+└── detection_data.py            # validation, image save, count/sound resolution, Mongo writes
 
 app/templates/live_kitting_activities/
-├── index.html                   # landing page - activity cards
-├── create.html                  # step 1 of create flow
-├── camera_check.html            # step 2 of create flow
-└── monitor.html                 # single-activity monitor page
+├── index.html
+├── create.html
+├── camera_check.html
+└── monitor.html                 # now includes per-camera detection pop-ups + sound toggle
 
 app/static/css/
-├── live-activities.css          # landing + create + camera-check (shared page-specific styles)
-└── monitor.css                  # monitor page only, including the full-bleed layout override
+├── live-activities.css          # landing + create + camera-check (unchanged)
+└── monitor.css                  # monitor page + detection pop-up + sound toggle styling
 
 app/static/js/
-├── live-activity-create.js      # step 1 page: Enter-to-advance focus, EDP AJAX lookup, busy-check on submit
-├── live-activities-list.js      # landing page: local-time formatting, Complete Manually inline confirm + AJAX
-└── monitor.js                   # monitor page: live-ticking elapsed-time timers
+├── live-activity-create.js
+├── live-activities-list.js
+├── monitor.js                   # timers + Socket.IO live sync + sound playback
+└── vendor/
+    └── socket.io.min.js         # NEW - self-hosted Socket.IO v4.7.5 client (see "Why self-hosted" below)
+
+app/extensions.py                 # NEW - shared `socketio = SocketIO(...)` singleton
 ```
 
 ## MongoDB collections
 
-Two collections, both under `mongodb.collections` in `config.yaml`:
+Only **one** collection now — `detection_events` (introduced mid-build)
+was removed in favor of embedding everything on the activity document
+itself. See "Why embedded, not a separate collection" below.
 
 ```yaml
 mongodb:
   collections:
     current_kits: "current_kit_configurations"   # existing - READ ONLY from this blueprint
-    live_activities: "live_activity_details"      # new
-    activity_history: "activity_history"           # new
+    live_activities: "live_activity_details"      # read/write, all detection data lives here too
+    activity_history: "activity_history"
 ```
 
-### `live_activity_details` (one doc per in-progress or just-created activity)
+### `live_activity_details` — full current shape
 
 ```
 {
   "table_id": int,
-  "table_name": str,                 # denormalized at creation time
-  "kit_id": ObjectId,                 # ref into current_kit_configurations
-  "kit_name": str,                    # denormalized at creation time
+  "table_name": str,
+  "kit_id": ObjectId,
+  "kit_name": str,
   "edp_number": str,
-  "order_number": str,                # free text, no format validation
-  "quantity_required": int,           # "units to pack" - the activity's target, entered at creation
-  "parts_configured": [ ... ],        # full parts array copied fresh from the kit doc at
-                                       # creation time - never trust a parts array round-tripped
-                                       # through the browser across the 2-step create flow
-  "camera_images": {
-      "cam1": str,                    # static placeholder path, e.g. "images/camera-check-cam1-placeholder.png"
-      "cam2": str
-  },
-  "current_kit_index_cam1": int,      # progress counter, default 1 at creation - "N/target" card
-  "current_kit_index_cam2": int,      # display. NOT yet driven by real detection events.
+  "order_number": str,
+  "quantity_required": int,
+  "parts_configured": [ ... ],        # copied fresh from the kit doc at creation
+
+  "camera_images": {"cam1": str, "cam2": str},
+
+  "current_kit_index_cam1": int,       # 1-based, advances independently per camera
+  "current_kit_index_cam2": int,       # via /api/validate-kit
+
   "status": "live" | "completed" | "completed-manually",
-  "created_at": iso str,              # UTC. Activity start time - basis for all elapsed-time display.
+  "created_at": iso str,
   "updated_at": iso str,
+
+  # --- Table Settings snapshot (added this session) ---
+  "table_settings": {
+      "audio_settings": { "camera_1_green": {...}, "camera_1_red": {...},
+                           "camera_2_green": {...}, "camera_2_red": {...} },
+      "expected_client_ips": [str, ...],
+      "push_notification_emails": [str, ...],
+      "push_notifications": { "<notification_id>": {"enabled": bool, "threshold_percent": float|None}, ... }
+  },
+  # One-time COPY of the table's Table Settings document (configuration/
+  # table_settings_data.py's table_configuration collection), taken at
+  # activity-creation time. Never re-read or updated afterward - later
+  # edits to Table Settings do NOT retroactively change an in-progress
+  # activity's snapshot. Not yet consumed anywhere except audio playback
+  # (see below) - client's explicit note: "we will use that in next
+  # iteration" for the rest (IPs, notifications).
+
+  # --- Detection data (embedded, added this session) ---
+  "part_counts_cam1": { "<kit_index>": { "<part_name>": <int count> } },
+  "part_counts_cam2": { "<kit_index>": { "<part_name>": <int count> } },
+  # FAST PATH - what the monitor page reads on every render. Updated via
+  # $inc, one integer field, one write. NEVER derived by scanning the
+  # detections array or querying a second collection. kit_index is an
+  # int in application code; Mongo stores the nested key as a string
+  # ("1", "2", ...) since object keys are always strings on disk.
+
+  "last_detected_cam1": {"part_name": str, "count": int, "detected_at": iso str} | null,
+  "last_detected_cam2": {...} | null,
+  # FAST PATH for the "Last detected" badge on a completed part-card.
+  # Updated via $set on every MATCHED detection only - an unmatched
+  # (red-path) detection never touches this field, so the badge always
+  # reflects the most recent successful detection, not the most recent
+  # detection of any kind.
+
+  "detections": {
+      "cam1": { "<kit_index>": [ {detection event}, ... ] },
+      "cam2": { "<kit_index>": [ {detection event}, ... ] }
+  },
+  # AUDIT TRAIL - full event log, write-heavy ($push), rarely read (a
+  # future History drill-down, not the live monitor page). Each event:
+  #   {
+  #     "detected_part": str,             # validation-driving label
+  #     "ai_detected_part_name": str,     # raw AI output, stored, unused for logic
+  #     "avg_threshold": float | None,
+  #     "tracking_id": str | None,
+  #     "image_path": str | None,         # relative path under detection_image_dir
+  #     "matched": bool,                  # true = green path, false = red path
+  #     "created_at": iso str,
+  #   }
+  # validate_kit() does NOT touch part_counts/last_detected/detections
+  # for the OLD kit index when advancing - that data stays as permanent
+  # history. The "reset" the UI shows for a new kit is simply because
+  # the new kit_index has no key yet in these maps (reads default to
+  # 0 / None), not a delete.
+
+  # --- Sound toggle (added this session) ---
+  "green_sound_enabled_cam1": bool,
+  "green_sound_enabled_cam2": bool
+  # Per-camera, per-ACTIVITY (not per-table). Seeded at creation from
+  # table_settings.audio_settings.camera_{N}_green.default_enabled, then
+  # independently toggleable via /api/toggle-sound for the lifetime of
+  # this activity. Flipping this NEVER writes back to the table's saved
+  # Table Settings (table_configuration collection) - client's explicit
+  # instruction. Red sound has NO equivalent field - it always reads
+  # table_settings.audio_settings.camera_{N}_red.default_enabled
+  # directly at playback time, every time, never toggleable per-activity.
 }
 ```
 
-**Uniqueness/business rule:** only one document with `status: "live"` is allowed per `table_id` at a time. Enforced in `activities_data.py` (`is_table_busy` / `get_live_activity_for_table`), checked at two points — see "Table-busy enforcement" below.
+### Why embedded, not a separate `detection_events` collection
 
-### `activity_history` (completed / completed-manually activities)
+An earlier pass in this build used a standalone `detection_events`
+collection (activity_id as a foreign key). Client explicitly changed
+this: **one activity_id must return the complete picture** with a single
+`find_one`, no join, no second collection to keep in sync. All detection
+data now lives on the activity document itself, nested camera-wise then
+kit-index-wise, exactly as described above.
 
-Same shape as `live_activity_details`, plus:
-```
-{
-  ...(all fields above, status updated)...
-  "stopped_at": iso str,       # UTC, when it was moved to history
-  "stop_reason": str | null,   # free text from the Complete Manually confirmation, or null if blank
-}
-```
-
-`complete_activity_manually()` copies the **full source document** (not a reconstructed subset) into this collection, so any field added to `live_activity_details` later is automatically carried into history without this function needing to know about it. The original document's `_id` is dropped before insert (history gets its own `_id`) and the source document is deleted from `live_activity_details` in the same call.
+**Sizing note** (confirmed acceptable at stated scale — 7 components/
+camera, up to ~400 kits per activity): worst case is roughly 1–4MB for
+the whole `detections` audit array across a full activity's lifetime —
+comfortably under MongoDB's 16MB document cap. If a future table runs
+far larger volumes, `detections` (the audit log only — **not**
+`part_counts`/`last_detected`, which stay tiny regardless of volume) is
+the field to consider splitting out first.
 
 ## Routes
 
-All under the `live_kitting_activities` blueprint, prefixed `/live-kitting-activities`.
+### `live_kitting_activities` blueprint (unchanged prefix/table)
+
+Same route table as before this session, with one addition to the
+`finalize` flow: it now also snapshots Table Settings (see
+`create_live_activity()` below) and the `monitor` route reads
+`green_sound_enabled` off the activity doc for the sound toggle's
+initial render state.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/live-kitting-activities` | GET | Landing page — lists all `status: "live"` activities |
+| `/live-kitting-activities` | GET | Landing page |
 | `/live-kitting-activities/create` | GET | Step 1 form |
-| `/live-kitting-activities/lookup-edp` | POST (AJAX) | `{table_id, edp_number}` → `{success, kit_id, kit_name}` or `{success: false, error}`. Exact match only, scoped to `table_id`. |
-| `/live-kitting-activities/check-table-busy` | POST (AJAX) | `{table_id}` → `{success, busy, order_number?}`. Called on Step 1's Next click only (not on table select) — a UX check, not the enforcement point. |
-| `/live-kitting-activities/create/camera-check` | GET | Step 2 — reads Step 1's data from query params, no DB write. Guarded by `_require_built_table()`. |
-| `/live-kitting-activities/create/finalize` | POST | Writes the `live_activity_details` document. Re-validates everything server-side and re-checks table-busy (race-safe). Redirects to the new activity's monitor page on success. |
-| `/live-kitting-activities/<activity_id>/complete-manually` | POST (AJAX) | `{reason?}` → `{success}` or `{success: false, error}`. Moves the doc to `activity_history`. |
-| `/live-kitting-activities/<activity_id>/monitor` | GET | Monitor page for one activity. 404 on malformed or nonexistent `activity_id`. |
+| `/live-kitting-activities/lookup-edp` | POST (AJAX) | EDP lookup |
+| `/live-kitting-activities/check-table-busy` | POST (AJAX) | Busy check |
+| `/live-kitting-activities/create/camera-check` | GET | Step 2 |
+| `/live-kitting-activities/create/finalize` | POST | Writes the activity doc, **now also snapshots table_settings** |
+| `/live-kitting-activities/<activity_id>/complete-manually` | POST (AJAX) | Moves to history |
+| `/live-kitting-activities/<activity_id>/monitor` | GET | Monitor page, **now with real counts + sound toggle state** |
 
-### Table registry guard
+`create_live_activity()` (`activities_data.py`) signature changed:
 
-Same contract as `configuration/routes.py`: `_get_tables()` / `_get_table(table_id)` / `_require_built_table(table_id)`, duplicated in this blueprint's `routes.py` rather than imported (blueprints stay decoupled). A JSON-friendly variant (`_require_built_table_json`, returns `None` instead of aborting) is used in AJAX endpoints so they can reply with a JSON error instead of an HTML 404 page.
-
-## Data flow: create → finalize
-
-1. **Step 1 (create.html)** collects station/order/EDP/units in the browser. EDP lookup and the busy-check are both AJAX calls against the live database — nothing is written yet.
-2. On Next, all of Step 1's values are passed as **query parameters** to `/create/camera-check` (no DB write, no session/temp collection — plain URL state).
-3. **Step 2 (camera_check.html)** re-renders those values into **hidden form fields**. Two static camera images are shown (`CAMERA_CHECK_IMAGES` constant in `routes.py`).
-4. On **Create Activity**, the hidden form POSTs to `/create/finalize`. This is the only point that touches the database for creation:
-   - Re-validates every field (`activities_data._validate_create_payload`) — nothing from the two-step browser flow is trusted.
-   - Re-checks table-busy (protects against two browser tabs/sessions racing the same table).
-   - Re-fetches the kit by `kit_id` + `table_id` from `current_kit_configurations` to get an **authoritative** `parts_configured` snapshot — never uses any parts data that might have passed through the browser.
-   - Inserts the `live_activity_details` document with `current_kit_index_cam{1,2}: 1` and `status: "live"`.
-   - Redirects to `/live-kitting-activities/<new_id>/monitor`.
-
-On validation failure or a `PyMongoError` at finalize, the camera-check page is re-rendered with the same data and an inline error — nothing typed is lost (no flash-message system exists yet, same known gap as the rest of the app).
-
-## Monitor page data shaping
-
-`activities_data.build_monitor_view(doc)` shapes a raw `live_activity_details` document into the template's per-camera structure:
-
-- Splits `parts_configured` by `camera` field (`cam1`/`cam2`).
-- Every part's detected `count` is **hardcoded to 0** in this build — not yet wired to real detection events. A part is "completed" once `count >= quantity_required`; since count is always 0, every part currently renders as pending. This is the one deliberate stub in an otherwise-final UI — see "Known gaps" below.
-- **Progress percentage is NOT derived from part quantities.** It's `current_kit_index_cam{N} / quantity_required` (the activity's overall target) — kits packed so far out of the target. This was a real bug in an earlier pass (summing individual part quantities gave misleading numbers like "0/6" instead of "0/50") — fixed to read the activity's own target field.
-
-## Timezone and elapsed-time handling
-
-Everything time-related is stored in UTC (`created_at`, `stopped_at`) and converted **client-side** for display, since the app can be viewed from multiple physical locations:
-
-- **Landing page card start time** (`live-activities-list.js`, `formatLocalStartTime`): 12-hour clock via `toLocaleTimeString`, plus a timezone label resolved via `Intl.DateTimeFormat().formatToParts()` (not string-splitting a rendered string, which broke on at least one real browser during development). Tries `shortGeneric` first (gives a named zone like "India Time" or "ET"), falls back to `short` (gives a GMT offset like "GMT+5:30"), and falls back to the raw IANA zone id (e.g. "Asia/Kolkata") as a last resort that's never blank.
-- **Monitor page timers** (`monitor.js`): every element with `[data-activity-timer]` (the header's "Total time" plus both camera panels' timers) independently computes `Date.now() - new Date(created_at).getTime()`, ticking every second via `setInterval`. All three currently point at the same `created_at` value — see "Known gaps."
-- If `created_at` is missing or unparseable, the timer shows `--:--:--` and logs a console warning rather than silently displaying a misleading number (an earlier version of this code showed what looked like the current wall-clock time when `created_at` was invalid, which was mistaken for a bug in the timer logic itself rather than bad input data).
-
-## Full-bleed monitor layout
-
-The monitor page needs to fill the full viewport width/height below the top nav, but every other page in the app uses `.app-main` (from `layout.css`) which is capped at `max-width: 1200px`, centered, padded, and bordered.
-
-Rather than edit the shared `.app-main` rule (which would affect every page), `base.html` exposes an empty `{% block main_class %}` on the `<main>` tag:
-```html
-<main class="app-main{% block main_class %}{% endblock %}">
+```python
+def create_live_activity(
+    activities_collection,
+    kits_collection,
+    payload,
+    camera_images,
+    table_settings_collection=None,   # NEW - optional, backward compatible
+):
 ```
-`monitor.html` is the only template that overrides it:
-```html
-{% block main_class %} app-main--full-bleed{% endblock %}
-```
-`monitor.css` then defines `.app-main.app-main--full-bleed` to cancel the max-width/margin/padding/border, and — critically — sets `display: flex; flex-direction: column` on that combined selector so `.app-main__top-row` (the Back button row) and `.monitor-page` correctly divide the available height via flexbox. (An earlier version used `height: 100%` on `.monitor-page` without making `.app-main` a flex container; since `.app-main` is a plain block by default, `height: 100%` measured against the wrong box and ignored the top-row's own height, causing a page-level scrollbar — exactly what the HMI fit-to-screen requirement forbids. Fixed by mirroring the same flex pattern `body` already uses at the outer level.)
 
-No other page loads `monitor.css`, and the override only fires when both classes are present, so this cannot leak into any other page's layout.
+When `table_settings_collection` is passed (routes.py always passes it
+now, via a new `_table_settings_collection()` accessor pointing at the
+`table_configuration` collection), the resulting activity doc gets a
+`table_settings` key (see schema above) and `green_sound_enabled_cam1/2`
+seeded from that snapshot. If omitted, behavior is identical to before
+this session (no `table_settings` key, callers that don't know about it
+still work).
+
+### `cv_ingest` blueprint (new)
+
+No url_prefix — every route is under `/api/...` directly.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/detection-update` | POST (multipart) | One part-detection event from the DeepStream app |
+| `/api/validate-kit` | POST (multipart) | `validate_now` signal — advances one camera's kit index |
+| `/api/toggle-sound` | POST (JSON) | Flips one camera's green-sound toggle on the table's current live activity |
+| `/api/detection-image/<table_dir>/<filename>` | GET | Serves a saved detection frame for the pop-up's `<img>` |
+| (Socket.IO) `join_activity` | — | Client joins the `activity:<id>` room on page load |
+
+Same `_get_tables()` / `_get_table()` / `_require_built_table()` /
+`_require_built_table_json()` contract as every other blueprint,
+duplicated locally per the project's decoupled-blueprints convention.
+
+#### `POST /api/detection-update`
+
+**Request** (multipart/form-data):
+
+| Field | Type | Notes |
+|---|---|---|
+| `tableid` | int | Required |
+| `camid` | `1` \| `2` \| `"cam1"` \| `"cam2"` | Normalized internally to `cam1`/`cam2` |
+| `detectedpart` | str | Required — the validation-driving label |
+| `Aidetectedpartname` | str | Raw AI output, stored, never used for matching logic |
+| `avg_threshold` | float | Optional |
+| `tracking_id` | str | Optional |
+| `kitname` | str | Optional (falls back to the activity's own `kit_name`) |
+| `image` | file | Optional — frequency/rules still open per client ("will clarify"); safest default is to send one every call |
+
+**Server logic** (`detection_data.record_detection`):
+
+1. Look up the table's current `status: "live"` activity — 400 if none.
+2. Match `detectedpart` against `parts_configured`, **scoped to the
+   given camera only** (cam1 detections never match cam2-configured
+   parts, and vice versa).
+3. **Matched** → green path: `$inc` the part's counter for the
+   activity's current kit index on that camera, `$set` `last_detected`,
+   `$push` the full event onto the audit log. Emits `detection:green`.
+4. **Unmatched** → red path: still `$push`s the audit event (`matched:
+   false`), does **not** touch any counter or `last_detected`. Emits
+   `detection:red`. This is a visual stub only — alert-type
+   differentiation (Validation Error vs Wrong Part Error) is still
+   deferred, per client's explicit note.
+5. All of the above happens in **one atomic `find_one_and_update`**
+   (returns the post-update doc so the new count can be read directly,
+   no separate read-back call), plus one small follow-up `$set` to
+   backfill the count into `last_detected` — 2 Mongo round trips total
+   per detection (was 3 in an earlier pass; optimized on client
+   request).
+6. Resolves whether a sound should play (see "Sound" below) using the
+   already-fetched post-update document — no extra query.
+
+**Response:** `{"success": true, "matched": bool, "count": int}` on
+success; `{"success": false, "error": str}` (400/500) otherwise. Never a
+raw 500 traceback.
+
+**Socket.IO emit** (room `activity:<id>`):
+
+```
+"detection:green" → {
+  cam_id, part_name, count, quantity_required, kit_index,
+  image_url, detected_at, popup_uptime_sec, audio_url
+}
+"detection:red" → {
+  cam_id, detected_part, kit_index,
+  image_url, detected_at, popup_uptime_sec, audio_url
+}
+```
+
+`audio_url` is `null` when no sound should play for this event (see
+sound resolution below) — the browser does nothing if it's null, no
+separate enabled/disabled logic needed client-side.
+
+#### `POST /api/validate-kit`
+
+**Request:** `tableid`, `camid`, `message` (must be exactly
+`"validate_now"`), `image` (optional, saved for audit only, not attached
+to any detection event).
+
+**Server logic** (`detection_data.validate_kit`): advances **only** the
+given camera's `current_kit_index_cam{N}` by 1. Confirmed: cam1/cam2
+advance independently — a `validate_now` for cam1 never touches cam2.
+Does not delete or reset any `part_counts`/`last_detected`/`detections`
+data for the old kit index; that data becomes that kit's permanent
+history simply by no longer being the "current" one read on the monitor
+page.
+
+**Socket.IO emit:** `"kit:advanced" → {cam_id, new_kit_index}`.
+
+#### `POST /api/toggle-sound`
+
+**Request (JSON):** `{"table_id": int, "camid": "1"|"2"|"cam1"|"cam2"}`.
+
+**Server logic** (`detection_data.toggle_green_sound`): flips
+`green_sound_enabled_cam{N}` on the table's current live activity.
+Effective **immediately** for the current kit (client's explicit call —
+no "wait for next kit" delay). Writes only to `live_activity_details`;
+never touches `table_configuration` (the table's saved Audio Settings
+default) — confirmed requirement, "don't change in default."
+
+**Socket.IO emit:** `"sound:toggled" → {cam_id, green_sound_enabled}` —
+broadcast to the whole room including the tab that triggered it, so all
+viewers (including the one that clicked) update from the same code path
+rather than an optimistic client-side flip that could desync on a failed
+request.
+
+#### `GET /api/detection-image/<table_dir>/<filename>`
+
+Serves a saved detection frame. Path shape mirrors exactly what
+`save_detection_image()` returns (e.g. `table_1/ab12cd34.jpg`) — a
+two-segment route rather than a wildcard, to avoid directory-traversal
+ambiguity.
+
+## Detection image storage
+
+Filesystem, namespaced per table, same convention as PQPR/audio:
+
+```
+data/detections/table_<id>/<uuid4hex><ext>
+```
+
+`save_detection_image()` (`cv_ingest/detection_data.py`) returns `None`
+if no image was sent (image frequency/rules still open — must not
+hard-fail on a request with no image), otherwise returns the path
+relative to `detection_image_dir` (what gets stored in the Mongo audit
+event and used to build `image_url`).
+
+## Sound system
+
+Two independent rules, per camera:
+
+| Color | Rule | Toggleable? |
+|---|---|---|
+| **Green** (matched) | Plays if `green_sound_enabled_cam{N}` (on the activity) is true | Yes — `/api/toggle-sound`, per-camera, per-activity, immediate |
+| **Red** (unmatched) | Plays if `table_settings.audio_settings.camera_{N}_red.default_enabled` (the table's saved default) is true | No — always reads the snapshot directly, every time |
+
+`detection_data.resolve_sound_for_detection(activity_doc, cam_id,
+matched)` implements both rules and also checks that the relevant audio
+slot actually has a file uploaded (`original_filename` present) —
+`default_enabled: true` with no file ever uploaded still resolves to no
+sound, since there's nothing to serve.
+
+The actual audio file is served by **reusing the existing route**
+`configuration.table_settings_audio_file` (no new file-serving code in
+`cv_ingest`) — `cv_ingest/routes.py`'s `_audio_url_for()` builds the URL
+via `url_for()`.
+
+**Browser playback** (`monitor.js`): `playDetectionSound(audioUrl)`
+constructs a fresh `Audio(url)` per call (so two rapid detections don't
+cut each other off) and calls `.play()`, catching and logging (not
+throwing on) autoplay-block rejections — a blocked sound must never
+break the rest of the monitor page's live updates.
+
+## Monitor page — detection pop-up UI
+
+### Layout (confirmed requirement, iterated twice this session)
+
+On a detection event, that camera's pop-up covers the **entire page
+height on that camera's side** — the global Back button row, the shared
+status/progress header, and the camera panel — not just the camera
+panel box. Still strictly split left/right by camera; a cam1 event never
+crosses into cam2's half, and vice versa.
+
+**Implementation:** the two pop-up elements
+(`.detection-popup[data-cam="cam1"]` / `[data-cam="cam2"]`) are **direct
+children of `.monitor-page`**, siblings of `.monitor-header` and
+`.monitor-cameras` — not nested inside `.camera-panel`. They're
+`position: absolute` against `.app-main.app-main--full-bleed` (which is
+`position: relative`, and has **zero padding** — padding lives on
+`.app-main__top-row` and `.monitor-page` individually instead), with
+`top: 0; bottom: 0` and a `left`/`right` split matching
+`.monitor-cameras`' two-column grid:
+
+```css
+.detection-popup[data-cam="cam1"] { left: 0; right: calc(50% + var(--spacing-md) / 2); }
+.detection-popup[data-cam="cam2"] { left: calc(50% + var(--spacing-md) / 2); right: 0; }
+```
+
+**Lesson learned (documented for future edits to this CSS):** an earlier
+version put padding on `.camera-panel` itself and tried to cancel it
+with a matching negative inset on the pop-up
+(`inset: calc(-1 * var(--spacing-md))`). This broke in one real
+deployment where the two values didn't line up exactly, leaving a
+visible gap. Fixed by moving padding to a padded-only child
+(`.camera-panel__body`) so the positioning parent has no padding to
+fight in the first place. Apply the same pattern (zero-padding
+positioning parent, padding on a child) if this pop-up ever needs
+further restructuring.
+
+**Image fit:** `object-fit: cover`, not `contain` — `contain` preserves
+aspect ratio and can letterbox (leave a visible gap) when the source
+image's shape doesn't match the pop-up box; `cover` always fills
+completely, cropping if needed. Verified against both a square test
+image and a deliberately mismatched 1920×1080 image.
+
+**Colors:** the whole pop-up (not just a metadata strip) is theme-tinted
+— dark green/red for the image area, brighter green/red for the
+metadata strip. No `--color-success`/`--color-danger` tokens exist yet
+in `variables.css` (same known gap as the Complete Manually button) —
+hardcoded to match that same color family.
+
+**Metadata format:** one centered line, `Detected: <part name> | Qty: x
+/ y` for green (qty segment omitted for red, since there's no
+required-qty to show against an unmatched part), plus a right-aligned
+timestamp.
+
+**Duration:** `green_popup_uptime_sec` / `red_popup_uptime_sec` from
+`config.yaml`, exposed to JS via `data-green-popup-uptime-sec` /
+`data-red-popup-uptime-sec` on `.monitor-page` — never hardcoded in JS.
+Configured **separately** per color (client's explicit call).
+
+### "Last detected" badge
+
+Exactly one part-card carries the badge at a time, per camera — driven
+by `last_detected_cam{N}` on the activity doc (server-side, for
+page-load/refresh) and `clearLastDetectedBadges()` in `monitor.js`
+(client-side, before tagging a new card on a live socket event). An
+earlier version rendered the badge unconditionally on every completed
+card, which stuck to multiple cards — fixed on both the server template
+(`{% if part.last_detected %}`) and the client JS.
+
+### Sound toggle button
+
+Sits next to "Kit #N" in each camera panel's header
+(`.camera-panel__kit-index-group`). Click → `POST /api/toggle-sound` →
+waits for the `sound:toggled` broadcast (including back to the same tab)
+to actually flip its own icon/state, rather than an optimistic update —
+keeps the server as the single source of truth and avoids a failed
+request leaving the UI in a state the server doesn't have.
+
+## Socket.IO infrastructure
+
+`app/extensions.py` (new) holds the shared `socketio = SocketIO(...)`
+singleton, `async_mode="threading"` (no eventlet/gevent in
+`requirements.txt` — this mode needs neither). `app/__init__.py` calls
+`socketio.init_app(app)`; `app.py` calls `socketio.run(app, ...)`
+instead of `app.run(...)`.
+
+**Why self-hosted, not CDN:** the client script
+(`app/static/js/vendor/socket.io.min.js`) is bundled locally rather than
+loaded from `cdn.socket.io`. This is an on-prem manufacturing HMI — the
+monitor page's live detection sync should not depend on the station
+having outbound internet access at runtime. Pulled from the official
+`socket.io-client` npm package (same file the CDN would serve), version
+4.7.5 to match Flask-SocketIO 5.3.x's default protocol.
+
+**Room strategy:** one room per activity (`activity:<id>`), joined via a
+`join_activity` Socket.IO event sent by `monitor.js` on `connect`. Every
+detection/kit-advance/sound-toggle event for that activity is emitted
+only to that room — never broadcast app-wide.
 
 ## Known gaps / next-session TODO
 
-- **Detection counts are static (0) for every part** — the single biggest gap. Wiring this up needs a decision on transport (the original plan, before this build's scope narrowed to UI-first, was: separate CV process → HTTP POST ingest endpoint → Mongo persistence → some form of live push to the browser). Flask-SocketIO is still not wired anywhere in the app; this blueprint's live-looking elements (timers, progress bars) currently update via client-side JS against server-rendered static data, not a real push channel.
-- **No per-kit timer** — both camera panels' timers and the header's Total Time all show the same activity-level elapsed time. A true per-kit timer (resetting when `current_kit_index_cam{N}` increments) needs a `kit_started_at`-style field that doesn't exist yet, deferred until detection events are wired.
-- **"See current settings" and "History" buttons are unwired placeholders** — behavior not yet defined.
-- **No red/success color tokens in `variables.css`** — the Complete Manually button and the monitor page's completed-section/card tinting use hardcoded hex values (`#dc2626` family for danger, `#0f6e56`/`#1d9e75` family for success) rather than a proper `--color-danger`/`--color-success` custom property, since neither exists yet. Flagged for the client to decide whether these should become real tokens.
-- **No `.btn` class existed anywhere in the shared CSS chain** before this build — `live-activities.css` defines `.btn`/`.btn--primary`/`.btn--secondary`/`.btn--danger`/`.btn--small` locally. If a global button class is introduced elsewhere later, this should be reconciled to avoid duplication.
-- Camera-check images are fixed static placeholders (`CAMERA_CHECK_IMAGES` constant in `routes.py`) — real per-camera capture is out of scope for this build.
+- **Red-popup alert-type logic** is still a stub — full differentiation
+  between Validation Error and Wrong Part Error (per the per-camera
+  alert config already in Current Kits Configuration) is deferred.
+- **No per-kit timer** — unchanged from before this session; both camera
+  panels' timers still show the whole activity's elapsed time.
+- **"See current settings" and "History" buttons** are still unwired
+  placeholders.
+- **`table_settings` snapshot is stored but only partially consumed** —
+  only `audio_settings` (for sound) is read anywhere right now.
+  `expected_client_ips` and `push_notifications` are captured at
+  creation time but not yet used by any code path (client's explicit
+  note: "we will use that in next iteration").
+- **Detection ingest race on page load**: if a detection arrives before
+  a browser tab's Socket.IO `join_activity` handshake completes (e.g.
+  right as the monitor page opens), that event is silently missed by
+  that tab — no error, just a missed pop-up/count update for that one
+  tab (other tabs already joined are unaffected, and the underlying
+  Mongo write still happens regardless). Flagged, not yet fixed — low
+  probability in real operation, and client confirmed no queueing is
+  needed for now.
+- **No rate-limiting** on the ingest endpoints.
+- **Audio playback not verified with real MP3 files** — testing this
+  session used placeholder non-decodable audio bytes in a headless
+  browser (autoplay/`Audio.play()` was exercised via interception, not
+  actual sound output). Confirm with real files in a real browser before
+  relying on this in production.
+- Camera-check images are still fixed static placeholders — unchanged
+  from before this session.

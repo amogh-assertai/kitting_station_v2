@@ -1,10 +1,13 @@
 # Kitting Station v2 — Project Overview
 
-Read this first. It orients a new agent session (or a new developer) on what this app is, what's built, and where to find detail.
+Read this first. It orients a new agent session (or a new developer) on
+what this app is, what's built, and where to find detail.
 
 ## What this is
 
-A Flask-based, server-rendered web app styled and used like an HMI (Human-Machine Interface) — built for a manufacturing kitting station. Runs on laptop monitors and larger fixed screens; no page-level scroll.
+A Flask-based, server-rendered web app styled and used like an HMI
+(Human-Machine Interface) — built for a manufacturing kitting station.
+Runs on laptop monitors and larger fixed screens; no page-level scroll.
 
 | | |
 |---|---|
@@ -19,104 +22,130 @@ A Flask-based, server-rendered web app styled and used like an HMI (Human-Machin
 | Doc | Covers |
 |---|---|
 | `docs/frd/FRD_APP.md` | Whole-app functional requirements — product identity, navigation, page-by-page status |
-| `docs/tsd/TSD_APP.md` | Whole-app technical architecture — stack, project structure, config system, frontend conventions |
-| `docs/frd/FRD_BASE_LAYOUT.md` | Functional spec of the shared shell — header, nav, theming, back button, table badge, sub-nav, fit-to-screen behavior |
-| `docs/tsd/TSD_BASE_LAYOUT.md` | Technical spec of the shell — how theming/back-button/table-badge/sub-nav are implemented |
-| `docs/frd/FRD_CONFIGURATION.md` | Functional spec of the Configuration section — multi-table selection, Current Kits Configuration, PQPR Analytics, Table Settings |
-| `docs/tsd/TSD_CONFIGURATION.md` | Technical spec of the Configuration section — table registry, MongoDB schemas, routes, data flow |
-| `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page |
-| `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec of Live Kitting Activities — routes, MongoDB schemas (`live_activity_details`, `activity_history`), data flow, timer/timezone handling |
-| `docs/WORKING_STYLE_AND_CONSTRAINTS.md` | How the client works — communication style, file delivery convention, build philosophy. **Read before making any change or delivering anything.** |
+| `docs/tsd/TSD_APP.md` | Whole-app technical architecture — stack, project structure, config system, frontend conventions, Socket.IO wiring |
+| `docs/frd/FRD_BASE_LAYOUT.md` | Functional spec of the shared shell |
+| `docs/tsd/TSD_BASE_LAYOUT.md` | Technical spec of the shell |
+| `docs/frd/FRD_CONFIGURATION.md` | Functional spec of the Configuration section |
+| `docs/tsd/TSD_CONFIGURATION.md` | Technical spec of the Configuration section |
+| `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page, **live detection pop-ups, per-camera sound (new)** |
+| `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec — routes, embedded MongoDB schema, **the `cv_ingest` blueprint, detection pipeline, Socket.IO events, sound resolution (new)** |
+| `docs/WORKING_STYLE_AND_CONSTRAINTS.md` | How the client works. **Read before making any change or delivering anything.** |
 
-There is no longer a single monolithic `FUNCTIONAL_DOC.md`/`TECHNICAL_DOC.md` — docs are split by section (FRD = what it does, TSD = how it's built) so each area can be updated independently as it's built out.
+## Multi-table concept
 
-## Multi-table concept (important — read before touching Configuration or building new sections)
-
-The app now models multiple physical kitting **tables** (stations/cells), not just one. Each table has a stable integer `table_id` (1, 2, 3, ... — extensible) and a display `name`. The registry lives in `config.yaml` under `configuration.tables`, each entry with a `built` flag:
-
-```yaml
-configuration:
-  tables:
-    - id: 1
-      name: "HVGKC-CELL"
-      built: true
-    - id: 2
-      name: "Truck Cell 1"
-      built: false
-    - id: 3
-      name: "Truck Cell 2"
-      built: false
-```
-
-- `table_id` is the reference used everywhere (URLs, MongoDB documents, filesystem paths) — never the table name.
-- `built: true` is the only table with real functionality right now (Table 1 / HVGKC-CELL). Tables 2 and 3 exist in the registry and show a placeholder page, but have no functionality yet.
-- If a future page/section (e.g. History) needs to be table-scoped too, follow the same pattern: `table_id` in the URL, a `_require_built_table()`-style guard, and Mongo documents carrying a `table_id` field. Live Kitting Activities already follows this pattern — see `TSD_LIVE_KITTING_ACTIVITIES.md`.
+Unchanged — see `configuration.tables` in `config.yaml`. Only Table 1
+(HVGKC-CELL) is built. Live Kitting Activities' detection ingest, like
+everything else, only functions for Table 1 (Tables 2/3 have no kit data
+to detect against).
 
 ## Current state (high level)
 
 **Built (Table 1 / HVGKC-CELL only):**
-- App shell — theming, HMI fit-to-screen layout, top nav, global back button + table badge
-- Configuration → table-selection landing page (3 cards: HVGKC-CELL, Truck Cell 1, Truck Cell 2)
-- Configuration → Current Kits Configuration — full CRUD, live search, parts + parts-to-neglect sub-tables, per-camera alert configuration, Total Parts / Total Parts to Neglect counts
-- Configuration → PQPR Analytics — Excel upload/replace/download, two-panel component/kit search
-- Configuration → Table Settings — Audio Settings (4 camera/color slots, MP3 upload + preview + default enabled/disabled), Expected Client IP Addresses, Push Notification Settings (emails + 4 notification toggles, one with a threshold percent)
-- Live Kitting Activities — landing page (live-activity cards, Complete Manually), 2-step create-activity flow (station/order/EDP lookup → camera check), full-width/height monitor page with per-camera completed/pending part cards. **Detected part counts are static (0) — not yet wired to real detection events.** See `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`.
+
+- App shell — theming, HMI fit-to-screen layout, top nav, global back
+  button + table badge
+- Configuration → table-selection landing page, Current Kits
+  Configuration (full CRUD), PQPR Analytics, Table Settings (Audio
+  Settings, Expected Client IPs, Push Notification Settings)
+- Live Kitting Activities — landing page, 2-step create-activity flow,
+  full-width/height monitor page
+- **Live detection ingest (new this revision):** a local DeepStream
+  application posts detection events and kit-advance signals to
+  `/api/detection-update` and `/api/validate-kit`. The monitor page
+  updates in real time via Socket.IO — part counts, Completed/Pending
+  card movement, a full-page-half pop-up (green for an expected part,
+  red for an unexpected one) with the part's photo and detection detail,
+  and per-camera detection sound (green toggleable per activity, red
+  always follows the table's saved default). Kit-advance signals move a
+  camera's current kit index forward independently per camera, with all
+  prior kits' detection data retained as history. See
+  `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`
+  for full detail.
+- `test_kitting_v2_api.py` — a standalone CLI script for exercising the
+  detection ingest API without a real DeepStream box; see the file
+  itself for usage (`--tableid --camid --object_detected "<part>"` or
+  `--tableid --camid --validate`).
 
 **Not yet built:**
-- Table 2 (Truck Cell 1) and Table 3 (Truck Cell 2) — registry entries exist, everything else is a placeholder
-- Live Kitting Activities' real detection wiring — UI/routes/schema are built, but part counts don't yet reflect real camera/model output; needs Flask-SocketIO or another push mechanism plus a CV-side ingest endpoint (not yet decided)
-- History — placeholder, needs MongoDB (Current Kits Configuration, Table Settings, and Live Kitting Activities already use Mongo; History does not yet)
+
+- Table 2 (Truck Cell 1) and Table 3 (Truck Cell 2) — still
+  registry-only placeholders
+- Full alert-type logic for unexpected/wrong-part detections (only the
+  visual red pop-up exists so far — no differentiation between
+  Validation Error and Wrong Part Error yet)
+- Per-kit timing (both camera panels still show the whole activity's
+  elapsed time, not a per-kit reset)
+- A UI to browse a completed kit's retained detection history (the data
+  is recorded, no viewer exists yet)
+- History section — placeholder, needs MongoDB
 - No authentication/authorization layer
 
 ## Tech stack (fixed — don't change without asking the client)
 
-Flask + Blueprints · Jinja2 (server-rendered) · Flask-SocketIO (not wired) · MongoDB (`kitting_station_v2` db) · plain CSS + custom properties · vanilla JS, no bundler · `config.yaml` (non-secret) + `.env` (secrets)
+Flask + Blueprints · Jinja2 (server-rendered) · **Flask-SocketIO — now
+wired** (see `TSD_LIVE_KITTING_ACTIVITIES.md`) · MongoDB
+(`kitting_station_v2` db) · plain CSS + custom properties · vanilla JS,
+no bundler (one exception: a self-hosted, not CDN-loaded, Socket.IO
+client — see `TSD_APP.md`) · `config.yaml` (non-secret) + `.env`
+(secrets)
 
 Full detail: `docs/tsd/TSD_APP.md`.
 
 ## Running locally
 
-1. `pip install -r requirements.txt` (add `pymongo` if not already listed)
+1. `pip install -r requirements.txt` (Flask-SocketIO already listed; no
+   new dependencies were added by the detection-ingest work — see
+   `test_kitting_v2_api.py`'s own docstring for its two extra test-only
+   dependencies, `requests` and `Pillow`, not needed to run the app
+   itself)
 2. Copy `.env.example` → `.env`, set `SECRET_KEY` and `MONGO_URI`
 3. Make sure MongoDB is running and reachable at `MONGO_URI`
-4. `python app.py`
+4. `python app.py` — this now starts the app via `socketio.run()`, not
+   `app.run()` (required for Socket.IO's websocket/polling transport to
+   work), but is otherwise a drop-in equivalent for local dev
 
 ## Where things live
 
 ```
 app/
-├── blueprints/<name>/routes.py             # HTTP layer per blueprint
+├── blueprints/<name>/routes.py
 ├── blueprints/configuration/
-│   ├── pqpr_parser.py                      # Excel -> JSON, config-driven layout
-│   ├── current_kits_data.py                # MongoDB data access + validation (current_kit_configurations)
-│   └── table_settings_data.py              # MongoDB data access + validation (table_configuration)
+│   ├── pqpr_parser.py
+│   ├── current_kits_data.py
+│   └── table_settings_data.py
 ├── blueprints/live_kitting_activities/
-│   └── activities_data.py                  # MongoDB data access + validation (live_activity_details, activity_history)
+│   └── activities_data.py              # + table_settings snapshot, sound toggle seeding, real detection counts
+├── blueprints/cv_ingest/                # NEW - detection ingest from local DeepStream app
+│   └── detection_data.py               # validation, image save, count/sound resolution, Mongo writes
+├── extensions.py                        # NEW - shared socketio singleton
 ├── config/
-│   ├── loader.py                           # config.yaml + .env merge, fail-fast validation
-│   └── db.py                               # MongoDB client setup
-├── templates/base.html                     # shell: header/nav/back-button+table-badge row/subnav/main/footer
-├── templates/configuration/
-│   ├── landing.html                        # table-selection cards
-│   ├── table_placeholder.html              # "not yet built" page for tables 2/3
-│   ├── _subnav.html                        # Current Kits / PQPR Analytics / Table Settings tabs
-│   ├── current_kits.html, kit_form.html, _kit_row.html, _part_row.html, _neglect_row.html
-│   ├── pqpr_analytics.html
-│   └── table_settings.html
+│   ├── loader.py                       # + live_kitting.* validation
+│   └── db.py
+├── templates/base.html
+├── templates/configuration/...
 ├── templates/live_kitting_activities/
-│   ├── index.html                          # landing page - activity cards
-│   ├── create.html                         # step 1 of create flow
-│   ├── camera_check.html                   # step 2 of create flow
-│   └── monitor.html                        # single-activity monitor page (full-width/height)
-└── static/{css,js}/                        # one file per concern; globally-linked files listed in base.html, page-specific ones loaded via {% block extra_css %}/{% block extra_js %}
+│   └── monitor.html                    # + detection pop-ups, sound toggle UI
+└── static/{css,js}/
+    ├── css/monitor.css                 # + detection pop-up, sound toggle styling
+    └── js/
+        ├── monitor.js                  # + Socket.IO wiring, sound playback
+        └── vendor/socket.io.min.js     # NEW - self-hosted client
 ```
 
 Filesystem storage (gitignored, under `data/`, namespaced per table_id):
 ```
-data/pqpr/table_<id>/         # PQPR Excel + parsed cache, one active file per table
-data/audio/table_<id>/        # MP3s for Table Settings' Audio Settings, one file per slot per table
+data/pqpr/table_<id>/
+data/audio/table_<id>/
+data/detections/table_<id>/         # NEW - saved detection frames, <uuid4hex><ext>
 ```
 
 ## Before you change anything
 
-Read `docs/WORKING_STYLE_AND_CONSTRAINTS.md`. Short version: confirm scope before building, ask short option-based questions when something's ambiguous, state assumptions explicitly, test end-to-end with `mongomock` before delivering, and deliver only changed/new files (zipped with real relative paths if more than 3).
+Read `docs/WORKING_STYLE_AND_CONSTRAINTS.md`. Short version: confirm
+scope before building, ask short option-based questions when something's
+ambiguous, state assumptions explicitly, test end-to-end with
+`mongomock` (and, for anything touching layout/CSS, a real headless
+browser — Playwright was used throughout the detection-ingest build to
+catch layout bugs that mongomock-only testing would have missed) before
+delivering, and deliver only changed/new files (zipped with real
+relative paths if more than 3).

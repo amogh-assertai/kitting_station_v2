@@ -2,6 +2,7 @@ from flask import Flask, request
 
 from app.config.loader import load_settings, BASE_DIR
 from app.config.db import init_mongo
+from app.extensions import socketio
 
 
 def create_app():
@@ -16,6 +17,7 @@ def create_app():
     )
 
     init_mongo(app, settings)
+    socketio.init_app(app)
     _register_blueprints(app)
     _register_context_processors(app, settings)
 
@@ -27,11 +29,13 @@ def _register_blueprints(app):
     from app.blueprints.live_kitting_activities import live_kitting_activities_bp
     from app.blueprints.history import history_bp
     from app.blueprints.configuration import configuration_bp
+    from app.blueprints.cv_ingest import cv_ingest_bp
 
     app.register_blueprint(home_bp)
     app.register_blueprint(live_kitting_activities_bp)
     app.register_blueprint(history_bp)
     app.register_blueprint(configuration_bp)
+    app.register_blueprint(cv_ingest_bp)
 
 
 def _register_context_processors(app, settings):
