@@ -93,14 +93,21 @@ def detection_update():
             image_path,
         )
     except detection_data.ValidationError as exc:
-        # reason now comes directly from the exception (set at the raise
-        # site in detection_data.py) rather than sniffed out of the
-        # message string - distinguishes "no live activity on this
-        # table" from "this camera already finished all its kits" from
-        # any other validation failure, so the DeepStream client (or any
-        # other caller) gets an actionable reason code, not just a
-        # generic error string - client's explicit ask: "API also should
-        # get appropriate feedback message, not just error."
+        # NEW - "camera_locked" is now a possible reason here too (a
+        # red-screen is already active on this camera), on top of the
+        # pre-existing reason set - routes.py itself needs no branching
+        # change, exc.reason already carries whichever code
+        # detection_data.py raised (client's ask predates this session:
+        # "API also should get appropriate feedback message"). A
+        # camera-locked rejection is intentionally NOT logged to Mongo
+        # (no audit value beyond "DeepStream kept sending while locked")
+        # - only a server-side log line, here, for anyone debugging a
+        # noisy DeepStream client during a lock.
+        if exc.reason == detection_data.REASON_CAMERA_LOCKED:
+            current_app.logger.info(
+                "cv_ingest: detection ignored, camera locked (table=%s cam=%s)",
+                form.get("tableid"), form.get("camid"),
+            )
         return jsonify(success=False, reason=exc.reason, message=str(exc)), 400
     except PyMongoError:
         return jsonify(success=False, reason="database_error", message="Could not connect to the database."), 500
@@ -112,7 +119,15 @@ def detection_update():
     audio_url = _audio_url_for(result["table_id"], result["audio_slot_id"])
 
     room = _room_for_activity(result["activity_id"])
-    if result["matched"]:
+    if result["matched"] or result["neglected"]:
+        # NEW - a neglected-part detection now ALSO takes the green
+        # path (client's explicit reversal: "dont give error sound
+        # instead give green sound and green pop-up"). "neglected" flag
+        # tells monitor.js whether to create a NEW red-tinted "Neglected"
+        # card (client card, not the live pop-up, which stays green) if
+        # this is the first time this part's been seen this kit, since
+        # a neglected part has no Pending-section placeholder to find
+        # and flip the way a real configured part does.
         socketio.emit(
             "detection:green",
             {
@@ -125,14 +140,39 @@ def detection_update():
                 "detected_at": result["detected_at"],
                 "popup_uptime_sec": _live_kitting_settings()["green_popup_uptime_sec"],
                 "audio_url": audio_url,
+                "neglected": result["neglected"],
+            },
+            room=room,
+        )
+    elif result["error"]:
+        # NEW - this unmatched detection just raised a wrong_part
+        # red-screen (the camera's alert_wrong_part_error master switch
+        # was on for this kit's config). BLOCKING event, distinct from
+        # the plain "detection:red" below - no popup_uptime_sec, no
+        # auto-hide timer; monitor.js keeps this on screen (and the
+        # audio looping/held, if enabled) until the operator resolves
+        # via /api/resolve-error (client: "stay till operator choose
+        # anyone").
+        socketio.emit(
+            "error:red",
+            {
+                "cam_id": result["cam_id"],
+                "error": result["error"],
+                "image_url": image_url,
+                "audio_url": audio_url,
             },
             room=room,
         )
     else:
-        # Red-popup path: full-box image+metadata treatment, same as
-        # green (client's explicit call) - alert-TYPE differentiation
-        # (Validation Error vs Wrong Part Error) is still deferred, this
-        # is only the visual pop-up, not the alert-rules engine.
+        # Genuinely unmatched (wrong_part) but NOT raised as a
+        # red-screen - the camera's alert_wrong_part_error master
+        # switch is off for this kit/camera (client: "still logged in
+        # backend" via record_detection's normal audit-log push AND its
+        # own individual wrong_part_cards entry - see
+        # activities_data.build_monitor_view - just no red-screen).
+        # Neglected-part detections NEVER reach this branch anymore
+        # (client's reversal this session moved them into the
+        # matched/neglected green branch above).
         socketio.emit(
             "detection:red",
             {
@@ -159,9 +199,11 @@ def validate_kit():
     """Receives a validate_now signal from the DeepStream application:
     tableid, camid, message=validate_now (fields), image (file, optional).
 
-    Advances that camera's kit index forward by 1. Full validation rules
-    (pass/fail a kit before advancing) are explicitly deferred - this
-    build just advances the counter and clears the UI for that camera.
+    Advances that camera's kit index forward by 1 - UNLESS a
+    validation_error red-screen was just raised for this camera (NEW
+    this session - see detection_data.validate_kit's own docstring),
+    in which case the advance is deferred until the operator resolves
+    via /api/resolve-error instead.
     """
     form = request.form
     image_file = request.files.get("image")
@@ -186,11 +228,52 @@ def validate_kit():
     try:
         result = detection_data.validate_kit(_activities_collection(), form)
     except detection_data.ValidationError as exc:
+        if exc.reason == detection_data.REASON_CAMERA_LOCKED:
+            current_app.logger.info(
+                "cv_ingest: validate ignored, camera locked (table=%s cam=%s)",
+                form.get("tableid"), form.get("camid"),
+            )
         return jsonify(success=False, reason=exc.reason, message=str(exc)), 400
     except PyMongoError:
         return jsonify(success=False, reason="database_error", message="Could not connect to the database."), 500
 
     room = _room_for_activity(result["activity_id"])
+
+    if result["validation_error"]:
+        # NEW - this validate call just raised a validation_error
+        # red-screen instead of advancing (missing/undercount/overcount
+        # issues found, camera's alert_validation_error switch on).
+        # BLOCKING event, same pattern as wrong_part's "error:red" -
+        # audio_url resolved the same way a detection's would be
+        # (red always follows the table's saved default, never
+        # per-activity toggleable).
+        # resolve_sound_for_detection needs the ACTIVITY document (to
+        # read its table_settings snapshot), not just the activity_id
+        # string returned by validate_kit() - one extra find_one by _id.
+        from bson import ObjectId
+        activity_doc_for_sound = _activities_collection().find_one({"_id": ObjectId(result["activity_id"])})
+        sound = detection_data.resolve_sound_for_detection(activity_doc_for_sound, result["cam_id"], matched=False)
+        audio_url = _audio_url_for(result["table_id"], sound["slot_id"])
+
+        socketio.emit(
+            "error:red",
+            {
+                "cam_id": result["cam_id"],
+                "error": result["error"],
+                "image_url": None,
+                "audio_url": audio_url,
+            },
+            room=room,
+        )
+        return jsonify(
+            success=True,
+            validation_error=True,
+            new_kit_index=result["new_kit_index"],
+            is_completed=False,
+            activity_fully_completed=False,
+            message="Validation error - awaiting operator resolution.",
+        )
+
     socketio.emit(
         "kit:advanced",
         {
@@ -230,11 +313,80 @@ def validate_kit():
     )
     return jsonify(
         success=True,
+        validation_error=False,
         new_kit_index=result["new_kit_index"],
         is_completed=result["is_completed"],
         activity_fully_completed=result["activity_fully_completed"],
         message=message,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resolve-error - NEW. Operator submits system_error/
+# process_error (+ optional comment) from the red-screen. The ONLY way
+# a locked camera becomes open again.
+# ---------------------------------------------------------------------------
+
+@cv_ingest_bp.route("/api/resolve-error", methods=["POST"])
+def resolve_error():
+    body = request.get_json(silent=True) or {}
+
+    try:
+        table_id = int(body.get("table_id"))
+    except (TypeError, ValueError):
+        return jsonify(success=False, reason="validation_error", message="table_id is required and must be an integer."), 400
+
+    try:
+        cam_id = detection_data.normalize_cam_id(body.get("camid"))
+    except detection_data.ValidationError as exc:
+        return jsonify(success=False, reason="validation_error", message=str(exc)), 400
+
+    chosen_option = (body.get("chosen_option") or "").strip()
+    comment = body.get("comment")
+
+    try:
+        result = detection_data.resolve_error(
+            _activities_collection(), table_id, cam_id, chosen_option, comment
+        )
+    except detection_data.ValidationError as exc:
+        return jsonify(success=False, reason=exc.reason, message=str(exc)), 400
+    except PyMongoError:
+        return jsonify(success=False, reason="database_error", message="Could not connect to the database."), 500
+
+    room = _room_for_activity(result["activity_id"])
+
+    # Every viewer: hide the red-screen, stop audio, unlock the camera
+    # panel. Distinct from "kit:advanced" (used for a normal
+    # validate_now) so monitor.js can run the "close red-screen" UI path
+    # (which also needs to stop looping audio) even on a wrong_part
+    # resolve, where the kit index does NOT change.
+    socketio.emit(
+        "error:resolved",
+        {
+            "cam_id": result["cam_id"],
+            "error_type": result["error_type"],
+            "new_kit_index": result["new_kit_index"],
+            "is_completed": result["is_completed"],
+            "kit_start_time": result["kit_start_time"],
+            "resolution_code": result["resolution_code"],
+        },
+        room=room,
+    )
+
+    if result["activity_fully_completed"]:
+        detection_data.complete_activity_if_both_cameras_done(
+            _activities_collection(),
+            _activity_history_collection(),
+            result["activity_id"],
+            result["completed_at"],
+        )
+        socketio.emit(
+            "activity:completed",
+            {"completed_at": result["completed_at"]},
+            room=room,
+        )
+
+    return jsonify(success=True, new_kit_index=result["new_kit_index"], message="Error resolved.")
 
 
 # ---------------------------------------------------------------------------

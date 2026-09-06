@@ -23,10 +23,18 @@
  *        replacing the completed/pending list for the configured
  *        duration, then reverts. Also updates the part's card/qty and
  *        moves it to Completed once its quantity is met.
- *      - "detection:red"    -> unexpected part detected: same full-box
- *        pop-up treatment, styled as a warning. Alert-type
- *        differentiation (Validation Error vs Wrong Part Error) is a
- *        later build - this is only the visual pop-up.
+ *      - "detection:red"    -> unexpected part detected, but NOT raised
+ *        as a blocking red-screen (neglected part, or the camera's
+ *        alert_wrong_part_error switch is off) - same brief full-box
+ *        pop-up treatment as green, auto-hides.
+ *      - "error:red"        -> NEW - a BLOCKING red-screen (wrong_part
+ *        or validation_error, master switch on). Stays on screen, red
+ *        audio loops, until the operator picks System Error/Process
+ *        Error (+ optional comment) and submits.
+ *      - "error:resolved"   -> NEW - the red-screen was resolved (any
+ *        viewer). Stops audio, hides the red-screen, unlocks the
+ *        camera. validation_error also advances the kit (reuses
+ *        handleKitAdvanced); wrong_part does not.
  *      - "kit:advanced"     -> that camera's kit index moved forward;
  *        clear all live counts back to 0/required for that camera only
  *        (cam1/cam2 advance independently), reset its Kit timer to 0,
@@ -234,7 +242,13 @@ function handleGreenDetection(payload) {
       card.classList.add('part-card--completed');
       const warningEl = card.querySelector('.part-card__warning');
       if (warningEl) warningEl.remove();
-      panel.querySelector('[data-completed-cards]').appendChild(card);
+      // Existing cards live directly in [data-completed-cards]/[data-pending-cards]
+      // OR inside a .part-card-wrapper (new cards created by this
+      // function - see below) - moving the card's own closest
+      // relevant node (wrapper if present, else the card itself) keeps
+      // both shapes working.
+      const nodeToMove = card.closest('.part-card-wrapper') || card;
+      panel.querySelector('[data-completed-cards]').appendChild(nodeToMove);
       updateSectionCounts(panel);
     }
 
@@ -247,6 +261,17 @@ function handleGreenDetection(payload) {
       badge.textContent = 'Last detected';
       card.appendChild(badge);
     }
+  } else if (payload.neglected) {
+    // NEW - a neglected part has no Pending-section placeholder to
+    // find (it's not in parts_configured at all), so the FIRST time
+    // it's detected in a kit there is nothing for findPartCard() to
+    // return. Build the card live, matching the same markup shape
+    // build_monitor_view/monitor.html produce on a page load - grouped
+    // by name (client: "count increments like a normal part"), so a
+    // SECOND detection of the same neglected part goes through the
+    // normal "found existing card" branch above instead of creating a
+    // duplicate.
+    createNeglectedCard(panel, payload);
   } else {
     console.warn('detection:green for a part not found on this panel - part configuration may have changed mid-activity.', payload);
   }
@@ -265,6 +290,50 @@ function handleGreenDetection(payload) {
 }
 
 /**
+ * Builds and appends a NEW neglected-part card into the Completed
+ * section - same markup shape as the server-rendered version (see
+ * monitor.html), wrapped in .part-card-wrapper so a future resolution
+ * badge slot exists even though a neglected card never actually gets
+ * one (only wrong_part cards do - kept consistent so
+ * clearLastDetectedBadges()/findPartCard()'s DOM traversal doesn't need
+ * two different card shapes to reason about).
+ */
+function createNeglectedCard(panel, payload) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'part-card-wrapper';
+
+  const card = document.createElement('div');
+  card.className = 'part-card part-card--completed part-card--neglected';
+  card.dataset.partName = payload.part_name;
+  card.dataset.cardType = 'neglected';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'part-card__name';
+  nameEl.textContent = payload.part_name;
+  card.appendChild(nameEl);
+
+  const qtyEl = document.createElement('span');
+  qtyEl.className = 'part-card__qty';
+  qtyEl.setAttribute('data-part-qty', '');
+  qtyEl.textContent = `Qty: ${payload.count} / 0`;
+  card.appendChild(qtyEl);
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'part-card__type-label';
+  labelEl.textContent = 'Neglected';
+  card.appendChild(labelEl);
+
+  const badge = document.createElement('span');
+  badge.className = 'part-card__badge';
+  badge.textContent = 'Last detected';
+  card.appendChild(badge);
+
+  wrapper.appendChild(card);
+  panel.querySelector('[data-completed-cards]').appendChild(wrapper);
+  updateSectionCounts(panel);
+}
+
+/**
  * Removes the "Last detected" badge from every part-card on this panel.
  * Called before tagging a new one, so exactly one card (or zero, before
  * the first detection) carries the badge at any time.
@@ -275,10 +344,17 @@ function clearLastDetectedBadges(panel) {
 
 /**
  * Handles a "detection:red" event: an unexpected/unconfigured part was
- * detected for this camera. Shows the same full-box pop-up treatment as
- * green (client's explicit call), styled as a warning instead. Alert-
- * type differentiation (Validation Error vs Wrong Part Error) is still
- * a later build - this is only the visual pop-up.
+ * detected for this camera, but NOT raised as a blocking red-screen
+ * (alert_wrong_part_error master switch is off for this kit/camera -
+ * see cv_ingest/detection_data.py; neglected parts now take the green
+ * path above instead of ever reaching this handler). Same brief,
+ * non-blocking pop-up treatment as green, styled as a warning,
+ * auto-hides after popup_uptime_sec. This is DISTINCT from "error:red"
+ * (below), which is the actual blocking red-screen. ALSO creates a new
+ * individual wrong_part card in Completed (client: "every wrong_part
+ * gets its own separate card") - unlike neglected, this is NEVER
+ * grouped/counted, so a card is created fresh on every single
+ * occurrence, even repeats of the same part name.
  */
 function handleRedDetection(payload) {
   const panel = findCameraPanel(payload.cam_id);
@@ -292,7 +368,384 @@ function handleRedDetection(payload) {
     uptimeSec: payload.popup_uptime_sec,
   });
 
+  createWrongPartCard(panel, {
+    partName: payload.detected_part,
+    resolutionCode: null,
+  });
+
   playDetectionSound(payload.audio_url);
+}
+
+/**
+ * Builds and appends ONE new wrong_part card - always a fresh card,
+ * never reused/grouped (client's explicit rule - each occurrence has
+ * its own independent resolution). resolutionCode is null until/unless
+ * this specific occurrence's red-screen gets resolved (see
+ * handleErrorResolved below), in which case the S/P badge is added to
+ * THIS exact wrapper - the card element is stored on the popup's
+ * dataset so handleErrorResolved can find it again without re-querying
+ * by part name (which would be ambiguous with multiple same-name
+ * cards).
+ */
+function createWrongPartCard(panel, { partName, resolutionCode }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'part-card-wrapper';
+
+  const card = document.createElement('div');
+  card.className = 'part-card part-card--completed part-card--wrong_part';
+  card.dataset.partName = partName;
+  card.dataset.cardType = 'wrong_part';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'part-card__name';
+  nameEl.textContent = partName;
+  card.appendChild(nameEl);
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'part-card__type-label';
+  labelEl.textContent = 'Wrong-part';
+  card.appendChild(labelEl);
+
+  wrapper.appendChild(card);
+
+  if (resolutionCode) {
+    appendResolutionBadge(wrapper, resolutionCode);
+  }
+
+  panel.querySelector('[data-completed-cards]').appendChild(wrapper);
+  updateSectionCounts(panel);
+  return wrapper;
+}
+
+/**
+ * Appends the S/P badge OUTSIDE the card (client's explicit call:
+ * "indicated by P or S outside the card but associated very near to
+ * card") - a sibling inside the same .part-card-wrapper, matching the
+ * server-rendered shape in monitor.html exactly.
+ */
+function appendResolutionBadge(wrapper, resolutionCode) {
+  const existing = wrapper.querySelector('.part-card__resolution-badge');
+  if (existing) existing.remove();
+  const badge = document.createElement('span');
+  badge.className = 'part-card__resolution-badge';
+  badge.textContent = resolutionCode;
+  badge.title = resolutionCode === 'S' ? 'System Error' : 'Process Error';
+  wrapper.appendChild(badge);
+}
+
+// ---------------------------------------------------------------------
+// 2b. Blocking red-screen (error:red / error:resolved) - NEW this
+// session. Distinct from the brief detection:red popup above: this
+// STAYS on screen (no auto-hide timer), shows two resolution buttons
+// (System Error / Process Error) + an optional comment box, loops/holds
+// the red audio, and locks the camera's whole panel until the operator
+// submits. Every viewer of this activity sees and can resolve the same
+// red-screen (server is the single source of truth - see
+// cv_ingest/detection_data.py's current_kit_errors_cam{N}).
+// ---------------------------------------------------------------------
+
+/**
+ * Tracks in-flight looping audio per camera, so handleErrorResolved can
+ * stop exactly the right <audio> element (a fresh Audio() per replay
+ * would leak/overlap otherwise, unlike the brief green/red pop-up sound
+ * which only ever plays once).
+ */
+const _errorAudioRegistry = new Map(); // camId -> HTMLAudioElement
+
+/**
+ * Builds a human-readable line for one issue entry, e.g.
+ * "Part A required 2 found 0 (missing)" - matches the client's own
+ * phrasing exactly. "unrecognized" (wrong_part's synthetic issue) has
+ * no required/found numbers, so it renders as just the part name.
+ */
+function formatIssueLine(issue) {
+  if (issue.issue === 'unrecognized') {
+    return `Detected: ${issue.part_name} (unrecognized part)`;
+  }
+  return `${issue.part_name} required ${issue.required} found ${issue.found} (${issue.issue})`;
+}
+
+/**
+ * Renders and locks in the blocking red-screen for one camera. Reused
+ * by both handleErrorRed() (a live "error:red" socket event) and
+ * initActiveErrorsOnLoad() (a viewer opening the page while an error is
+ * ALREADY active - server-rendered current_kit_errors_cam{N}, see
+ * monitor.html/activities_data.build_monitor_view), so both paths
+ * produce identical UI.
+ */
+function showErrorScreen(camId, { errorType, issues, imageUrl, audioUrl }) {
+  const panel = findCameraPanel(camId);
+  if (!panel) return;
+
+  const popupEl = document.querySelector(`.detection-popup[data-cam="${camId}"]`);
+  const bodyEl = panel.querySelector('[data-panel-body]');
+  if (!popupEl || !bodyEl) return;
+
+  // A locked camera's brief-popup auto-hide timer (if one happened to
+  // be in flight) must not fire and reveal the normal panel underneath
+  // the red-screen - clear it defensively.
+  if (popupEl._hideTimer) {
+    window.clearTimeout(popupEl._hideTimer);
+    popupEl._hideTimer = null;
+  }
+
+  popupEl.classList.remove('detection-popup--green', 'detection-popup--red');
+  popupEl.classList.add('detection-popup--red', 'detection-popup--blocking');
+
+  const imageEl = popupEl.querySelector('[data-popup-image]');
+  const imageAreaEl = popupEl.querySelector('[data-popup-image-area]');
+  if (imageUrl) {
+    imageEl.src = imageUrl;
+    imageEl.alt = '';
+    imageAreaEl.hidden = false;
+  } else {
+    imageAreaEl.hidden = true;
+  }
+
+  const label = errorType === 'validation_error' ? 'Validation Error' : 'Wrong Part Error';
+  popupEl.querySelector('[data-popup-part]').textContent = label;
+  popupEl.querySelector('[data-popup-time]').textContent = '';
+
+  const issuesEl = popupEl.querySelector('[data-error-issues]');
+  if (issuesEl) {
+    issuesEl.innerHTML = '';
+    issues.forEach((issue) => {
+      const line = document.createElement('div');
+      line.className = 'detection-popup__issue-line';
+      line.textContent = formatIssueLine(issue);
+      issuesEl.appendChild(line);
+    });
+  }
+
+  const commentEl = popupEl.querySelector('[data-error-comment]');
+  if (commentEl) commentEl.value = '';
+
+  popupEl.hidden = false;
+  bodyEl.hidden = true;
+  panel.setAttribute('data-camera-locked', '');
+
+  playErrorAudioLoop(camId, audioUrl);
+}
+
+/**
+ * Plays the red audio on a loop while the red-screen is active (client:
+ * "audio plays... until operator choose... and click submit") - unlike
+ * the brief pop-up's one-shot playDetectionSound(). Stored in
+ * _errorAudioRegistry so handleErrorResolved can stop this exact
+ * element later.
+ */
+function playErrorAudioLoop(camId, audioUrl) {
+  //console.log('[DEBUG red-screen audio]', { camId, audioUrl }); // TEMP - remove after diagnosing
+  stopErrorAudio(camId);
+  if (!audioUrl) return;
+  const audio = new Audio(audioUrl);
+  audio.loop = true;
+  audio.play().catch((err) => {
+    console.warn('Error red-screen audio playback blocked or failed:', err);
+  });
+  _errorAudioRegistry.set(camId, audio);
+}
+function stopErrorAudio(camId) {
+  const existing = _errorAudioRegistry.get(camId);
+  if (existing) {
+    existing.pause();
+    existing.currentTime = 0;
+    _errorAudioRegistry.delete(camId);
+  }
+}
+
+/**
+ * Handles "error:red": either a wrong_part detection or a validate_kit
+ * call just raised a BLOCKING red-screen (camera's relevant master
+ * switch was on - see cv_ingest/detection_data.py). Stays until
+ * resolved; no popup_uptime_sec, no auto-hide.
+ */
+function handleErrorRed(payload) {
+  showErrorScreen(payload.cam_id, {
+    errorType: payload.error.error_type,
+    issues: payload.error.issues,
+    imageUrl: payload.image_url,
+    audioUrl: payload.audio_url,
+  });
+
+  // NEW - a BLOCKING wrong_part red-screen never passes through
+  // handleRedDetection() (that's only the non-blocking brief path), so
+  // its card has to be created here instead. validation_error has no
+  // matching card at all (its issues live only in the red-screen
+  // itself / detections.errors - never in wrong_part_cards), so this
+  // only fires for error_type === "wrong_part". Stored on the popup
+  // element's dataset so handleErrorResolved can find THIS exact card
+  // later without an ambiguous by-name lookup (multiple wrong_part
+  // cards can share the same part_name).
+  if (payload.error.error_type === 'wrong_part') {
+    const panel = findCameraPanel(payload.cam_id);
+    if (panel) {
+      const partName = payload.error.issues && payload.error.issues[0]
+        ? payload.error.issues[0].part_name
+        : null;
+      const wrapper = createWrongPartCard(panel, { partName, resolutionCode: null });
+      const popupEl = document.querySelector(`.detection-popup[data-cam="${payload.cam_id}"]`);
+      if (popupEl) popupEl._pendingWrongPartCard = wrapper;
+    }
+  }
+}
+
+/**
+ * Handles "error:resolved": an operator (on any viewer's tab) submitted
+ * system_error/process_error for this camera's red-screen. Every
+ * viewer, including the one that submitted it, reacts to this same
+ * broadcast (server is the single source of truth) - stops audio, hides
+ * the red-screen, unlocks the panel, and:
+ *   - validation_error: behaves exactly like a normal "kit:advanced" -
+ *     reuses handleKitAdvanced's own reset/completed logic so the two
+ *     code paths can never drift apart.
+ *   - wrong_part: kit index unchanged - just reveals the panel body
+ *     again, exactly as it was before the red-screen interrupted it,
+ *     and appends the S/P badge to the card handleErrorRed created
+ *     (client: "operator choise... indicated by P or S outside the
+ *     card but associated very near to card").
+ */
+function handleErrorResolved(payload) {
+  const panel = findCameraPanel(payload.cam_id);
+  if (!panel) return;
+
+  stopErrorAudio(payload.cam_id);
+
+  const popupEl = document.querySelector(`.detection-popup[data-cam="${payload.cam_id}"]`);
+  if (popupEl) {
+    popupEl.hidden = true;
+    popupEl.classList.remove('detection-popup--blocking');
+  }
+
+  panel.removeAttribute('data-camera-locked');
+
+  if (payload.error_type === 'validation_error') {
+    // Resolving a validation_error IS the advance (client's explicit
+    // rule) - reuse the exact same UI-reset path a normal validate
+    // would trigger, so Completed/Pending reset, the Kit timer resets,
+    // "Kit #N" updates, and the top progress bar updates identically.
+    handleKitAdvanced({
+      cam_id: payload.cam_id,
+      new_kit_index: payload.new_kit_index,
+      is_completed: payload.is_completed,
+      kit_start_time: payload.kit_start_time,
+    });
+  } else {
+    // wrong_part: kit index untouched - just reveal the panel body
+    // that was hidden underneath the red-screen.
+    const bodyEl = panel.querySelector('[data-panel-body]');
+    if (bodyEl) bodyEl.hidden = false;
+
+    if (popupEl && popupEl._pendingWrongPartCard && payload.resolution_code) {
+      appendResolutionBadge(popupEl._pendingWrongPartCard, payload.resolution_code);
+      popupEl._pendingWrongPartCard = null;
+    }
+  }
+}
+
+/**
+ * Wires the red-screen's two resolution buttons + optional comment box
+ * + Submit. One shared handler for both camera's fixed popup elements
+ * (same "one fixed element per camera, re-populate on each event"
+ * convention as showPopup()). POSTs to /api/resolve-error; the actual
+ * UI teardown happens on the "error:resolved" broadcast, not here
+ * (same reasoning as initSoundToggles - server is the single source of
+ * truth, every viewer including this tab reacts to the same event).
+ */
+function initErrorResolutionControls() {
+  const monitorPage = document.querySelector('.monitor-page');
+  if (!monitorPage) return;
+  const tableId = monitorPage.dataset.tableId;
+
+  document.querySelectorAll('.detection-popup').forEach((popupEl) => {
+    const camId = popupEl.dataset.cam;
+    let chosenOption = null;
+
+    const systemBtn = popupEl.querySelector('[data-error-option="system_error"]');
+    const processBtn = popupEl.querySelector('[data-error-option="process_error"]');
+    const submitBtn = popupEl.querySelector('[data-error-submit]');
+
+    function selectOption(option, activeBtn, inactiveBtn) {
+      chosenOption = option;
+      if (activeBtn) activeBtn.classList.add('error-option-btn--selected');
+      if (inactiveBtn) inactiveBtn.classList.remove('error-option-btn--selected');
+      if (submitBtn) submitBtn.disabled = false;
+    }
+
+    if (systemBtn) {
+      systemBtn.addEventListener('click', () => selectOption('system_error', systemBtn, processBtn));
+    }
+    if (processBtn) {
+      processBtn.addEventListener('click', () => selectOption('process_error', processBtn, systemBtn));
+    }
+
+    if (submitBtn) {
+      submitBtn.addEventListener('click', () => {
+        if (!chosenOption || !tableId) return;
+        const commentEl = popupEl.querySelector('[data-error-comment]');
+        const comment = commentEl ? commentEl.value : '';
+
+        submitBtn.disabled = true;
+
+        fetch('/api/resolve-error', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            table_id: tableId,
+            camid: camId,
+            chosen_option: chosenOption,
+            comment: comment,
+          }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (!data.success) {
+              console.warn('Resolve error failed:', data.message);
+              submitBtn.disabled = false;
+            }
+            // On success, teardown comes from the "error:resolved"
+            // socket broadcast (including back to this same tab) -
+            // not handled here, single code path for all viewers.
+            chosenOption = null;
+            if (systemBtn) systemBtn.classList.remove('error-option-btn--selected');
+            if (processBtn) processBtn.classList.remove('error-option-btn--selected');
+          })
+          .catch((err) => {
+            console.warn('Resolve error request failed:', err);
+            submitBtn.disabled = false;
+          });
+      });
+    }
+  });
+}
+
+/**
+ * On page load, renders any camera that already has an active,
+ * unresolved error - persistence for a viewer who opens (or refreshes)
+ * the monitor page WHILE a red-screen is showing on some other client
+ * (client's explicit requirement). Data comes server-rendered via
+ * data-* attributes on each camera panel (see monitor.html /
+ * activities_data.build_monitor_view's is_locked/active_error fields) -
+ * no extra request needed.
+ */
+function initActiveErrorsOnLoad() {
+  document.querySelectorAll('.camera-panel[data-camera-locked]').forEach((panel) => {
+    const camId = panel.dataset.camId;
+    const errorDataEl = panel.querySelector('[data-active-error]');
+    if (!errorDataEl) return;
+    try {
+      const error = JSON.parse(errorDataEl.textContent);
+      const imageUrl = error.image_path ? `/api/detection-image/${error.image_path}` : null;
+      showErrorScreen(camId, {
+        errorType: error.error_type,
+        issues: error.issues,
+        imageUrl,
+        audioUrl: null, // don't replay audio just for a page load/refresh - only on the live event that raised it
+      });
+    } catch (err) {
+      console.warn('Could not parse active error data on load:', err);
+    }
+  });
 }
 
 /**
@@ -422,7 +875,20 @@ function handleKitAdvanced(payload) {
 
   const pendingZone = panel.querySelector('[data-pending-cards]');
 
-  panel.querySelectorAll('.part-card').forEach((card) => {
+  // FIX - neglected/wrong_part cards belong to the kit that just
+  // finished, not the new one starting now (client: "it should go off
+  // after kit increments automatically"). They are REMOVED entirely
+  // here (their own wrapper included, so no orphaned empty
+  // .part-card-wrapper is left behind) rather than reset-and-moved to
+  // Pending like a normal configured part - a fresh kit has no
+  // detections yet, so there is nothing valid to show until (if ever)
+  // the next kit gets its own neglected/wrong_part occurrence.
+  panel.querySelectorAll('.part-card--neglected, .part-card--wrong_part').forEach((card) => {
+    const node = card.closest('.part-card-wrapper') || card;
+    node.remove();
+  });
+
+  panel.querySelectorAll('.part-card:not(.part-card--neglected):not(.part-card--wrong_part)').forEach((card) => {
     const qtyEl = card.querySelector('[data-part-qty]');
     const required = card.dataset.required || (qtyEl ? qtyEl.textContent.split('/')[1].trim() : '0');
     card.dataset.required = required;
@@ -584,7 +1050,7 @@ function showPopup(camId, panel, { variant, partName, count, required, imageUrl,
     window.clearTimeout(popupEl._hideTimer);
   }
 
-  popupEl.classList.remove('detection-popup--green', 'detection-popup--red');
+  popupEl.classList.remove('detection-popup--green', 'detection-popup--red', 'detection-popup--blocking');
   popupEl.classList.add(`detection-popup--${variant}`);
 
   const imageEl = popupEl.querySelector('[data-popup-image]');
@@ -636,6 +1102,8 @@ function initSocket() {
   socket.on('kit:advanced', handleKitAdvanced);
   socket.on('sound:toggled', handleSoundToggled);
   socket.on('activity:completed', handleActivityCompleted);
+  socket.on('error:red', handleErrorRed);
+  socket.on('error:resolved', handleErrorResolved);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -643,4 +1111,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initKitTimers();
   initSocket();
   initSoundToggles();
+  initErrorResolutionControls();
+  initActiveErrorsOnLoad();
 });

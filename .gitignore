@@ -7,5 +7,5 @@ venv/
 data/pqpr/*
 !data/pqpr/.gitkeep
 server_related/
-data/detections/
+data/detections/*
 bugs_to_solve.txt

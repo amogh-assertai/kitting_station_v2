@@ -50,10 +50,17 @@ mongodb.collections.activity_history with two extra fields
 "completed-manually", then deletes the original from live_activities.
 See complete_activity_manually().
 
-No `neglect_parts` or `camerawise_alert_config` copy yet - not part of
-this build's scope (nothing in the current UI surfaces them). If a later
-requirement needs them for live monitoring, add the fields then, copied
-the same way `parts_configured` is.
+`neglect_parts` and `camerawise_alert_config` ARE now copied (added this
+session, for the red-screen / error-lock feature - see
+cv_ingest/detection_data.py's module docstring for how they're used).
+Same one-time-snapshot convention as `parts_configured` and
+`table_settings` - editing a kit's neglect list or alert config in
+Current Kits Configuration after an activity has started does NOT
+retroactively change that activity's already-running snapshot.
+
+Also new this session: `camera_state_cam{1,2}` ("open"|"locked") and
+`current_kit_errors_cam{1,2}` (active-error persistence, null when
+open) - see cv_ingest/detection_data.py.
 """
 
 from datetime import datetime, timezone
@@ -271,6 +278,16 @@ def create_live_activity(
         "order_number": data["order_number"],
         "quantity_required": data["quantity_required"],
         "parts_configured": kit_doc.get("parts", []),
+        # NEW (this session, red-screen feature) - both previously
+        # NOT copied (see this module's original docstring note, now
+        # superseded): required so validate-time validation_error
+        # checks and detection-time wrong_part/neglect checks have the
+        # data they need on the ACTIVITY doc itself, not just the kit
+        # config doc (which could change after this activity started -
+        # same "snapshot at creation, never retroactive" rule already
+        # applied to parts_configured and table_settings).
+        "neglect_parts": kit_doc.get("neglect_parts", []),
+        "camerawise_alert_config": kit_doc.get("camerawise_alert_config", []),
         "camera_images": {
             "cam1": camera_images.get("cam1", ""),
             "cam2": camera_images.get("cam2", ""),
@@ -279,6 +296,18 @@ def create_live_activity(
         "current_kit_index_cam2": 1,
         "green_sound_enabled_cam1": green_sound_defaults["cam1"],
         "green_sound_enabled_cam2": green_sound_defaults["cam2"],
+        # NEW (red-screen feature) - both cameras start "open" (no
+        # active error). "locked" is set by cv_ingest/detection_data.py
+        # the moment a wrong_part or validation_error red-screen is
+        # raised, and cleared back to "open" only when the operator
+        # resolves via /api/resolve-error.
+        "camera_state_cam1": "open",
+        "camera_state_cam2": "open",
+        # NEW - persistence for a viewer who opens the monitor page
+        # WHILE a red-screen is already active on some other client
+        # (client's explicit requirement) - null means no active error.
+        "current_kit_errors_cam1": None,
+        "current_kit_errors_cam2": None,
         # Kit-level timing lives NESTED inside detections.cam{N}.<kit>
         # .timing (restructured this session, per client's request - see
         # cv_ingest/detection_data.py's module docstring for the full
@@ -435,8 +464,81 @@ def build_monitor_view(doc):
                 "quantity_required": required,
                 "completed": count >= required and required > 0,
                 "last_detected": is_last_detected,
+                "card_type": "normal",
             })
         return parts
+
+    def _neglected_cards_for_camera(camera, kit_index):
+        """NEW (this session) - neglected-part cards, GROUPED by
+        part_name with a running count (client: "count increments like
+        a normal part"), same part_counts_<cam> structure a real
+        matched part uses. quantity_required is always 0 for a neglect
+        entry (client: "2 detected, then it shows 2/0") - so these are
+        trivially always "completed" (count >= 0 is always true) and
+        belong permanently in the Completed section, never Pending.
+        Only includes a card once the part has actually been detected
+        at least once this kit (count > 0) - an un-detected neglect-list
+        entry shows nothing, same as an un-detected real part would show
+        in Pending rather than a phantom 0-count Completed card."""
+        cards = []
+        for neglect_part in doc.get("neglect_parts", []):
+            if neglect_part.get("camera") != camera:
+                continue
+            part_name = neglect_part.get("part_name")
+            count = _detected_count(camera, kit_index, part_name)
+            if count <= 0:
+                continue
+            is_last_detected = (
+                doc.get(f"last_detected_{camera}", {}) or {}
+            ).get("part_name") == part_name
+            cards.append({
+                "part_name": part_name,
+                "count": count,
+                "quantity_required": 0,
+                "completed": True,
+                "last_detected": is_last_detected,
+                "card_type": "neglected",
+            })
+        return cards
+
+    def _wrong_part_cards_for_camera(camera, kit_index):
+        """NEW (this session) - wrong_part cards, INDIVIDUAL (one per
+        detection event, never grouped/counted - client: "every
+        wrong_part gets its own separate card since its option and
+        comment can vary depending on what operator choose"). Sourced
+        from detections.<cam>.<kit_index>.wrong_part_cards (see
+        cv_ingest/detection_data.record_detection). "resolution" is None
+        until an operator resolves the red-screen that (may have)
+        accompanied this specific occurrence - see
+        cv_ingest/detection_data.resolve_error's arrayFilters update."""
+        raw_cards = (
+            doc.get("detections", {})
+            .get(camera, {})
+            .get(str(kit_index), {})
+            .get("wrong_part_cards", [])
+        )
+        cards = []
+        for card in raw_cards:
+            resolution = card.get("resolution")
+            cards.append({
+                "part_name": card.get("part_name"),
+                "count": None,
+                "quantity_required": None,
+                "completed": True,
+                "last_detected": False,
+                "card_type": "wrong_part",
+                "detected_at": card.get("detected_at"),
+                # NEW - S/P badge source (client: "operator choise...
+                # indicated by P or S"). None while unresolved (switch
+                # was off, so no red-screen ever blocked this one) or
+                # while a red-screen for it is still pending resolution.
+                "resolution_code": (
+                    "S" if resolution and resolution.get("chosen_option") == "system_error"
+                    else "P" if resolution and resolution.get("chosen_option") == "process_error"
+                    else None
+                ),
+            })
+        return cards
 
     def _kit_start_time(camera, kit_index):
         """The CURRENT kit's start time, for the monitor page's per-kit
@@ -469,6 +571,24 @@ def build_monitor_view(doc):
             parts = _parts_for_camera(camera, kit_index)
             completed = [p for p in parts if p["completed"]]
             pending = [p for p in parts if not p["completed"]]
+            # NEW - neglected + wrong_part cards are ALWAYS "completed"
+            # by definition (client: they show up in the Completed
+            # section, red-tinted, never in Pending) - appended after
+            # the real parts so normal cards render first, extras last.
+            # Does NOT affect total_count/percent below - those are
+            # still computed purely from kit_index/target, unaffected
+            # by neglected/wrong_part activity (client's explicit call).
+            completed = completed + _neglected_cards_for_camera(camera, kit_index) + _wrong_part_cards_for_camera(camera, kit_index)
+
+        # NEW (red-screen feature) - a viewer opening (or refreshing)
+        # the monitor page while an error is already active on this
+        # camera sees the locked/red state immediately, sourced from
+        # current_kit_errors_cam{N} (persists across page loads - the
+        # whole point of storing it on the doc rather than only ever
+        # emitting it over a socket event, which a fresh page load would
+        # miss entirely).
+        active_error = doc.get(f"current_kit_errors_{camera}")
+        is_locked = doc.get(f"camera_state_{camera}", "open") == "locked"
 
         # Capped at 100% - kit_index can be ONE past target once
         # completed (e.g. 6 with target 5), which would otherwise show
@@ -494,6 +614,9 @@ def build_monitor_view(doc):
             # start time, for the monitor page's per-kit timer (resets
             # to 0 whenever validate_kit advances this camera).
             "kit_start_time": _kit_start_time(camera, kit_index),
+            # NEW (red-screen feature)
+            "is_locked": is_locked,
+            "active_error": active_error,
         }
 
     return {

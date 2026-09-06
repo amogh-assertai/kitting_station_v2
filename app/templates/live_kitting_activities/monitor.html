@@ -29,6 +29,13 @@
        explicit call). monitor.js toggles [hidden] and shows/hides the
        matching .camera-panel__body underneath for the configured
        duration, then reverts. -->
+  <!-- Each popup now also carries the BLOCKING red-screen markup
+       (issues list + System Error/Process Error buttons + optional
+       comment + Submit) - hidden/inert unless
+       detection-popup--blocking is added by monitor.js's
+       showErrorScreen(). Same single fixed element per camera as the
+       brief pop-up (re-populated per event), so there is still only
+       ONE popup element per camera to reason about, not two. -->
   <div class="detection-popup" data-popup data-cam="cam1" hidden>
     <div class="detection-popup__image-area" data-popup-image-area>
       <img class="detection-popup__image" data-popup-image alt="">
@@ -36,6 +43,13 @@
     <div class="detection-popup__meta" data-popup-meta>
       <span class="detection-popup__part" data-popup-part></span>
       <span class="detection-popup__time" data-popup-time></span>
+      <div class="detection-popup__issues" data-error-issues></div>
+      <div class="detection-popup__error-actions">
+        <button type="button" class="error-option-btn" data-error-option="system_error">System Error</button>
+        <button type="button" class="error-option-btn" data-error-option="process_error">Process Error</button>
+      </div>
+      <textarea class="detection-popup__error-comment" data-error-comment placeholder="Optional comment&hellip;"></textarea>
+      <button type="button" class="error-submit-btn" data-error-submit disabled>Submit</button>
     </div>
   </div>
   <div class="detection-popup" data-popup data-cam="cam2" hidden>
@@ -45,6 +59,13 @@
     <div class="detection-popup__meta" data-popup-meta>
       <span class="detection-popup__part" data-popup-part></span>
       <span class="detection-popup__time" data-popup-time></span>
+      <div class="detection-popup__issues" data-error-issues></div>
+      <div class="detection-popup__error-actions">
+        <button type="button" class="error-option-btn" data-error-option="system_error">System Error</button>
+        <button type="button" class="error-option-btn" data-error-option="process_error">Process Error</button>
+      </div>
+      <textarea class="detection-popup__error-comment" data-error-comment placeholder="Optional comment&hellip;"></textarea>
+      <button type="button" class="error-submit-btn" data-error-submit disabled>Submit</button>
     </div>
   </div>
 
@@ -103,8 +124,18 @@
 
   <div class="monitor-cameras">
     {% for cam in [activity.cam1, activity.cam2] %}
-      <div class="camera-panel" data-cam-id="{{ 'cam1' if loop.first else 'cam2' }}" {% if cam.is_completed %}data-camera-completed{% endif %}>
-        <div class="camera-panel__body" data-panel-body>
+      <div class="camera-panel" data-cam-id="{{ 'cam1' if loop.first else 'cam2' }}" {% if cam.is_completed %}data-camera-completed{% endif %} {% if cam.is_locked %}data-camera-locked{% endif %}>
+        <!-- NEW - persistence for a viewer opening the page WHILE a
+             red-screen is already active elsewhere (current_kit_errors_cam{N}
+             on the activity doc - see activities_data.build_monitor_view).
+             monitor.js's initActiveErrorsOnLoad() reads this JSON blob
+             and renders the same locked/red state immediately, instead
+             of the normal panel. type="application/json" keeps the
+             browser from trying to execute it as JS. -->
+        {% if cam.is_locked and cam.active_error %}
+        <script type="application/json" data-active-error>{{ cam.active_error | tojson }}</script>
+        {% endif %}
+        <div class="camera-panel__body" data-panel-body {% if cam.is_locked %}hidden{% endif %}>
         <div class="camera-panel__header">
           <div class="camera-panel__title">
             <span class="camera-panel__icon" aria-hidden="true">&#9679;</span>
@@ -158,11 +189,47 @@
           </div>
           <div class="camera-panel__cards" data-completed-cards>
             {% for part in cam.completed_parts %}
-              <div class="part-card part-card--completed" data-part-name="{{ part.part_name }}">
-                <span class="part-card__name">{{ part.part_name }}</span>
-                <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
-                {% if part.last_detected %}
-                  <span class="part-card__badge">Last detected</span>
+              <!-- NEW - a wrapper around each card + its (optional)
+                   S/P resolution badge, so the badge sits OUTSIDE the
+                   card but stays visually grouped with it (client's
+                   explicit call: "indicated by P or S outside the card
+                   but associated very near to card") - a flex row, not
+                   an absolutely-positioned overlay, so it never
+                   collides with the existing "Last detected"/warning
+                   badges that already live INSIDE their own cards. -->
+              <div class="part-card-wrapper">
+                <div
+                  class="part-card part-card--completed part-card--{{ part.card_type }}"
+                  data-part-name="{{ part.part_name }}"
+                  data-card-type="{{ part.card_type }}"
+                >
+                  <span class="part-card__name">{{ part.part_name }}</span>
+                  {% if part.card_type == 'wrong_part' %}
+                    <!-- No quantity for a wrong_part card - each one is
+                         a single occurrence, not a running count
+                         (client: "every wrong_part gets its own
+                         separate card"). Labeled clearly so an operator
+                         (or anyone reading the markup later) can tell
+                         this apart from a real/neglected part at a
+                         glance - client: "wrong_part or neglected part
+                         info should be inside the code somewhere
+                         clearly." -->
+                    <span class="part-card__type-label">Wrong-part</span>
+                  {% else %}
+                    <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+                    {% if part.card_type == 'neglected' %}
+                      <span class="part-card__type-label">Neglected</span>
+                    {% endif %}
+                  {% endif %}
+                  {% if part.last_detected %}
+                    <span class="part-card__badge">Last detected</span>
+                  {% endif %}
+                </div>
+                {% if part.card_type == 'wrong_part' and part.resolution_code %}
+                  <span
+                    class="part-card__resolution-badge"
+                    title="{{ 'System Error' if part.resolution_code == 'S' else 'Process Error' }}"
+                  >{{ part.resolution_code }}</span>
                 {% endif %}
               </div>
             {% endfor %}

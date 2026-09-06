@@ -106,11 +106,103 @@ for the OLD kit index - that data stays exactly as it was, forming that
 kit's permanent history. The "reset" the UI sees for the new kit is
 simply because the new kit_index has no key yet in these maps (reads
 default to 0 / None), not because anything was deleted.
+
+---------------------------------------------------------------------
+RED-SCREEN / ERROR-LOCK FEATURE (added this session)
+---------------------------------------------------------------------
+
+Two error types, both gated by a per-kit, per-camera MASTER SWITCH on
+the activity doc's "camerawise_alert_config" (copied at creation time
+from the kit doc's own camerawise_alert_config - see
+activities_data.create_live_activity):
+
+  camerawise_alert_config: [
+      {"camera": "cam1", "alert_validation_error": bool, "alert_wrong_part_error": bool},
+      {"camera": "cam2", "alert_validation_error": bool, "alert_wrong_part_error": bool},
+  ]
+
+Client's explicit confirmation: these are MASTER switches. If off, the
+underlying issue is still detected/computed (and, for wrong_part,
+logged to the normal audit trail as an unmatched event) but does NOT
+raise a red-screen or lock the camera. If on, it does both.
+
+1) wrong_part - checked in record_detection(), same moment as today's
+   unmatched-part check. A detected part that doesn't match any
+   configured part for that camera is "wrong_part" UNLESS it's also
+   present in the activity's "neglect_parts" list for that camera (also
+   newly copied from the kit doc at creation) - a neglected part is
+   simply not tracked at all, no popup of either color.
+
+2) validation_error - checked in validate_kit(), BEFORE advancing the
+   camera's kit index. For every part configured on that camera, using
+   each part's own alert_missing/alert_undercount/alert_overcount flags
+   (already present on parts_configured - unchanged from before this
+   session):
+     - alert_missing    + found == 0            -> "missing"
+     - alert_undercount + 0 < found < required   -> "undercount"
+     - alert_overcount  + found > required        -> "overcount"
+   All qualifying issues across every part on that camera are collected
+   into ONE validation_error (client's explicit call: "one validation
+   error, can have multiple parts issue, but combined its one
+   validation error" - never split into several separate red-screens
+   for one validate call).
+
+BLOCKING BEHAVIOR - both error types now LOCK the camera
+(camera_state_cam{N}: "open" | "locked") until an operator resolves via
+the new /api/resolve-error endpoint:
+  - wrong_part：kit index does NOT advance on resolve - camera just
+    unlocks, DeepStream must send its own validate_now afterward.
+  - validation_error: resolving IS the advance - kit index moves
+    forward as part of the same resolve call (client: "for
+    validation_error its advance, for wrong_part, it should stay in
+    same kit").
+
+While a camera is locked, further detection-update/validate-kit calls
+for THAT camera are rejected with reason "camera_locked" (a NEW reason
+code, distinct from "camera_completed") - logged server-side only, not
+written to Mongo (client: "camera stays locked... ignored/logged, no
+new red-screen").
+
+PERSISTENCE for late-joining viewers - "current_kit_errors_cam{N}" on
+the activity doc holds the ACTIVE, unresolved error (or null if the
+camera is open):
+  {
+    "error_type": "validation_error" | "wrong_part",
+    "kit_index": int,
+    "issues": [{"part_name": str, "issue": "missing"|"undercount"|"overcount"|"unrecognized",
+                "required": int|None, "found": int|None}],
+    "image_path": str | None,
+    "detected_at": iso str,
+  } | None
+A monitor page opened while this is non-null renders the locked/red
+state immediately, instead of the normal camera panel - see
+activities_data.build_monitor_view.
+
+PERMANENT RECORD - on resolve, the SAME error object (plus a
+"resolution" key: {"chosen_option": "system_error"|"process_error",
+"comment": str|None, "resolved_at": iso str}) is appended to
+detections.<cam>.<kit_index>.errors (a NEW array, sibling to "events"
+and "timing" under the same per-kit record) - so a kit's error history
+is queryable from the same single find_one that already returns
+everything else about that kit. This happens for BOTH error types
+(client: "every wrong_part error... gets its own permanent entry under
+that kit, same as validation_error"), even though only validation_error
+also advances the kit index.
 """
 
 from datetime import datetime, timezone
 
 CAM_IDS = ("cam1", "cam2")
+
+# Camera lock states - "locked" while a red-screen (either error type)
+# is active and unresolved; "open" otherwise. Distinct from
+# _is_camera_completed()'s "all kits done" state, which is permanent
+# and unrelated to this per-kit lock.
+CAMERA_STATE_OPEN = "open"
+CAMERA_STATE_LOCKED = "locked"
+
+ERROR_TYPE_VALIDATION = "validation_error"
+ERROR_TYPE_WRONG_PART = "wrong_part"
 
 
 class ValidationError(Exception):
@@ -132,6 +224,11 @@ class ValidationError(Exception):
 REASON_NO_LIVE_ACTIVITY = "no_live_activity"
 REASON_CAMERA_COMPLETED = "camera_completed"
 REASON_VALIDATION_ERROR = "validation_error"
+REASON_CAMERA_LOCKED = "camera_locked"  # NEW - distinct from
+# REASON_CAMERA_COMPLETED: "locked" means a red-screen is active and
+# waiting on the operator; "completed" means this camera is permanently
+# done with the whole activity. Both reject detection-update/
+# validate-kit calls, but a caller (DeepStream) needs to tell them apart.
 
 
 def _now_iso():
@@ -159,6 +256,52 @@ def _kit_path(cam_id, kit_index):
     detections.cam1.<kit_index> - the root that "timing", "validation",
     and "events" all nest under."""
     return f"detections.{cam_id}.{kit_index}"
+
+
+def _camera_state_field(cam_id):
+    return f"camera_state_{cam_id}"
+
+
+def _current_kit_errors_field(cam_id):
+    return f"current_kit_errors_{cam_id}"
+
+
+def _is_camera_locked(activity_doc, cam_id):
+    """True while a red-screen (either error type) is active on this
+    camera and awaiting operator resolution. Independent of
+    _is_camera_completed() - a camera can only be locked WHILE it still
+    has kits left to work; once completed, further calls are rejected
+    for that reason instead (checked first in both record_detection and
+    validate_kit)."""
+    return activity_doc.get(_camera_state_field(cam_id), CAMERA_STATE_OPEN) == CAMERA_STATE_LOCKED
+
+
+def _neglected_part_names(activity_doc, cam_id):
+    """Part names in this camera's neglect list (camera-scoped, per
+    client confirmation: a part neglected on cam1 does not suppress
+    wrong_part on cam2 for the same part name)."""
+    return {
+        p.get("part_name")
+        for p in activity_doc.get("neglect_parts", [])
+        if p.get("camera") == cam_id
+    }
+
+
+def _camera_alert_switches(activity_doc, cam_id):
+    """Reads this camera's master switches from camerawise_alert_config
+    (copied onto the activity doc at creation - see
+    activities_data.create_live_activity). Defaults both to True if the
+    camera has no entry (defensive only - _validate_camera_alert_config
+    in current_kits_data.py always produces exactly one entry per
+    camera at the kit-config level, so this should not normally be
+    hit)."""
+    for entry in activity_doc.get("camerawise_alert_config", []):
+        if entry.get("camera") == cam_id:
+            return {
+                "alert_validation_error": bool(entry.get("alert_validation_error", True)),
+                "alert_wrong_part_error": bool(entry.get("alert_wrong_part_error", True)),
+            }
+    return {"alert_validation_error": True, "alert_wrong_part_error": True}
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +489,19 @@ def record_detection(activities_collection, form, image_path):
             reason=REASON_CAMERA_COMPLETED,
         )
 
+    # NEW - locked camera (an unresolved red-screen is showing) rejects
+    # further detections outright. Per client's explicit call: stays
+    # locked, DeepStream is free to keep sending, this is simply
+    # ignored/logged (server-side log only - see routes.py - never
+    # written to Mongo, since it carries no useful audit value beyond
+    # "yes, it kept sending while locked").
+    if _is_camera_locked(activity_doc, cam_id):
+        raise ValidationError(
+            f'Camera {cam_id} on table {data["table_id"]} is locked pending operator '
+            f"resolution of an active error - detection ignored.",
+            reason=REASON_CAMERA_LOCKED,
+        )
+
     activity_id = activity_doc["_id"]
     kit_index = activity_doc.get(_kit_index_field(cam_id), 1)
     part_name = data["detected_part"]
@@ -355,6 +511,47 @@ def record_detection(activities_collection, form, image_path):
     quantity_required = matched_part.get("quantity_required") if matched_part else None
 
     now = _now_iso()
+
+    # NEW (this session, revised) - a neglected part is now a THIRD
+    # detection outcome, distinct from both "matched" and "wrong_part":
+    # client's explicit reversal of the original "neglected = never
+    # tracked, completely invisible" rule. A neglected part now:
+    #   - counts (part_counts_<cam>.<kit>.<part_name> increments, same
+    #     $inc mechanism as a real matched part - client: "count
+    #     increments like a normal part")
+    #   - gets a GREEN pop-up + green sound (client: "dont give error
+    #     sound instead give green sound and green pop-up") - NOT a
+    #     red-screen, NOT even the brief non-blocking red popup
+    #   - quantity_required is always 0 for a neglect-list entry
+    #     (client: "quantity required for neglect part should be
+    #     zero... 2 detected, then it shows 2/0") - it is never
+    #     "pending", trivially always at-or-past its own target
+    #   - shows a permanent card in Completed, red-tinted with a
+    #     "Neglected" badge, GROUPED by part_name (same X/0 card keeps
+    #     incrementing on repeat detections, not a new card each time -
+    #     see activities_data.build_monitor_view for the card list)
+    #
+    # A genuine wrong_part (unmatched AND not neglected) is unchanged in
+    # its OWN behavior (red-screen if the master switch is on), but now
+    # ALSO always gets a Completed-section card - INDIVIDUAL, one new
+    # card per detection event, never merged/counted (client: "every
+    # wrong_part gets its own separate card since its option and
+    # comment can vary depending on what operator choose").
+    is_neglected = not matched and part_name in _neglected_part_names(activity_doc, cam_id)
+    is_wrong_part_candidate = not matched and not is_neglected
+
+    should_raise_wrong_part = False
+    wrong_part_issue = None
+    if is_wrong_part_candidate:
+        wrong_part_issue = {
+            "part_name": part_name,
+            "issue": "unrecognized",
+            "required": None,
+            "found": None,
+        }
+        switches = _camera_alert_switches(activity_doc, cam_id)
+        should_raise_wrong_part = switches["alert_wrong_part_error"]
+
     event = {
         "detected_part": part_name,
         "ai_detected_part_name": data["ai_detected_part_name"],
@@ -362,6 +559,14 @@ def record_detection(activities_collection, form, image_path):
         "tracking_id": data["tracking_id"],
         "image_path": image_path,
         "matched": matched,
+        # NEW - explicit outcome tag on every audit-log event, so the
+        # kit's permanent record (detections.<cam>.<kit>.events) is
+        # self-describing without having to re-derive "was this
+        # neglected?" from a snapshot that may itself change later
+        # (client: "wrong_part or neglected part info should be inside
+        # the code somewhere clearly"). One of "matched", "neglected",
+        # "wrong_part".
+        "outcome": "matched" if matched else ("neglected" if is_neglected else "wrong_part"),
         "created_at": now,
     }
 
@@ -376,18 +581,21 @@ def record_detection(activities_collection, form, image_path):
     count_path = f"part_counts_{cam_id}.{kit_index}.{part_name}"
     last_detected_path = f"last_detected_{cam_id}"
     first_part_path = f"{kit_base}.timing.first_part_detected_time"
+    wrong_part_cards_path = f"{kit_base}.wrong_part_cards"
 
     update = {
         "$push": {events_path: event},
         "$set": {"updated_at": now},
     }
-    if matched:
+
+    # NEW - neglected parts now increment the SAME part_counts_<cam>
+    # structure a real matched part uses (client: "count increments
+    # like a normal part"). This is what makes the Completed-card
+    # grouping-by-name + running-count come for free out of
+    # activities_data.build_monitor_view's existing per-part-count
+    # logic - no separate counter structure needed for neglected parts.
+    if matched or is_neglected:
         update["$inc"] = {count_path: 1}
-        # $set and $inc can target different paths in the same update
-        # document safely (Mongo only forbids the SAME path in two
-        # operators, not two different paths under the same top-level
-        # key) - last_detected_cam1 and part_counts_cam1.* are distinct
-        # top-level fields, so this is a single valid atomic update.
         update["$set"][last_detected_path] = {
             "part_name": part_name,
             "detected_at": now,
@@ -397,6 +605,32 @@ def record_detection(activities_collection, form, image_path):
             # need the aggregation-pipeline update form for that, not
             # worth the added complexity for one field).
         }
+
+    # NEW - wrong_part detections get their OWN append-only array per
+    # kit (client: "every wrong_part gets its own separate card" -
+    # individual, never grouped/counted like neglected parts are).
+    # image_path here lets the card show the same detection photo the
+    # red-screen (if raised) would have shown. "resolution" starts as
+    # None and is filled in by resolve_error() ONLY for the specific
+    # wrong_part occurrence that actually triggered the active
+    # red-screen being resolved - other wrong_part cards for this same
+    # kit (if the switch was off, or if several occurred before this
+    # one got resolved) are untouched, since each has its own
+    # independent resolution per client's explicit rule.
+    if is_wrong_part_candidate:
+        wrong_part_card = {
+            "part_name": part_name,
+            "detected_at": now,
+            "image_path": image_path,
+            "resolution": None,
+        }
+        update.setdefault("$push", {})
+        # Mongo forbids two $push operators on DIFFERENT top-level
+        # array paths inside literally the same "$push" dict only if
+        # they'd collide - events_path and wrong_part_cards_path are
+        # distinct paths, so both can be pushed in one update via
+        # $push's own multi-field form.
+        update["$push"][wrong_part_cards_path] = wrong_part_card
 
     # first_part_detected_time is set on EVERY detection call (matched or
     # not - client's spec is "first part detected", not "first MATCHED
@@ -418,6 +652,29 @@ def record_detection(activities_collection, form, image_path):
     if not existing_first_part:
         update["$set"][first_part_path] = now
 
+    # NEW - if this unmatched detection raises a wrong_part red-screen
+    # (master switch on), lock the camera and persist the active error
+    # in the SAME atomic update as the audit-log push - one write, no
+    # separate round trip, so a viewer can never observe a half-applied
+    # state (event logged but camera not yet locked, or vice versa).
+    error_payload = None
+    if should_raise_wrong_part:
+        error_payload = {
+            "error_type": ERROR_TYPE_WRONG_PART,
+            "kit_index": kit_index,
+            "issues": [wrong_part_issue],
+            "image_path": image_path,
+            "detected_at": now,
+            # NEW - links this active error back to its own entry in
+            # wrong_part_cards (matched by detected_at, unique enough
+            # within one kit's card list) so resolve_error() can attach
+            # the operator's resolution to the SAME card shown in the
+            # Completed section, not just the transient error object.
+            "wrong_part_detected_at": now,
+        }
+        update["$set"][_camera_state_field(cam_id)] = CAMERA_STATE_LOCKED
+        update["$set"][_current_kit_errors_field(cam_id)] = error_payload
+
     updated_doc = activities_collection.find_one_and_update(
         {"_id": activity_id},
         update,
@@ -425,7 +682,7 @@ def record_detection(activities_collection, form, image_path):
     )
 
     count = 0
-    if matched:
+    if matched or is_neglected:
         count = (
             updated_doc.get(f"part_counts_{cam_id}", {})
             .get(str(kit_index), {})
@@ -441,22 +698,74 @@ def record_detection(activities_collection, form, image_path):
             {"$set": {f"{last_detected_path}.count": count}},
         )
 
-    sound = resolve_sound_for_detection(updated_doc, cam_id, matched)
+    # NEW - neglected parts play the GREEN sound/pop-up, exactly like a
+    # real matched part (client's explicit reversal: "dont give error
+    # sound instead give green sound and green pop-up"). Pass
+    # matched=True here for sound resolution purposes only - "matched"
+    # in the RETURNED payload below still correctly reflects
+    # parts_configured membership (used elsewhere, e.g. quantity_required),
+    # this local plays_as_green flag is just for picking the green vs
+    # red audio slot.
+    plays_as_green = matched or is_neglected
+    sound = resolve_sound_for_detection(updated_doc, cam_id, plays_as_green)
 
     return {
         "matched": matched,
+        "neglected": is_neglected,
         "table_id": data["table_id"],
         "cam_id": cam_id,
         "activity_id": str(activity_id),
         "kit_index": kit_index,
         "part_name": part_name,
         "count": count,
-        "quantity_required": quantity_required,
+        "quantity_required": quantity_required if matched else (0 if is_neglected else None),
         "image_path": image_path,
         "detected_at": now,
         "should_play_sound": sound["should_play"],
         "audio_slot_id": sound["slot_id"],
+        # NEW - non-None only when this detection just raised a
+        # wrong_part red-screen. routes.py uses this to decide whether
+        # to emit "error:red" (blocking) INSTEAD OF the normal
+        # "detection:red" (brief, non-blocking) event.
+        "error": error_payload,
     }
+
+
+# ---------------------------------------------------------------------------
+# validation_error check - run at validate_kit time, BEFORE advancing
+# ---------------------------------------------------------------------------
+
+def _find_validation_issues(activity_doc, cam_id, kit_index):
+    """Checks every part configured on this camera against its detected
+    count for the CURRENT kit index, using each part's own
+    alert_missing/alert_undercount/alert_overcount flags (unchanged
+    fields on parts_configured). Returns a list of issue dicts (possibly
+    empty) - ALL qualifying issues across every part are collected into
+    one list, never split into multiple separate validation_errors for
+    one validate call (client's explicit call).
+
+    This computes issues regardless of the camera's
+    alert_validation_error master switch - the switch only decides
+    whether the CALLER raises a red-screen for them, not whether they're
+    detected/logged (client: "we dont raise alert but still logged in
+    backend")."""
+    issues = []
+    for part in activity_doc.get("parts_configured", []):
+        if part.get("camera") != cam_id:
+            continue
+
+        part_name = part.get("part_name")
+        required = part.get("quantity_required", 0)
+        found = get_part_count(activity_doc, cam_id, kit_index, part_name)
+
+        if part.get("alert_missing") and found == 0:
+            issues.append({"part_name": part_name, "issue": "missing", "required": required, "found": found})
+        elif part.get("alert_undercount") and 0 < found < required:
+            issues.append({"part_name": part_name, "issue": "undercount", "required": required, "found": found})
+        elif part.get("alert_overcount") and found > required:
+            issues.append({"part_name": part_name, "issue": "overcount", "required": required, "found": found})
+
+    return issues
 
 
 # ---------------------------------------------------------------------------
@@ -497,8 +806,21 @@ def validate_kit(activities_collection, form):
     (image path, pass/fail detail, etc.) - not populated yet, so this
     key does not appear in the document until that build happens.
 
-    Full validation-before-advance rules ("did this kit actually pass?")
-    are explicitly deferred per client - this just advances the counter.
+    NEW this session - validation_error check runs BEFORE advancing:
+    _find_validation_issues() collects every qualifying missing/
+    undercount/overcount issue across all parts configured on this
+    camera. If the camera's alert_validation_error master switch is ON
+    and any issues were found, this call does NOT advance the kit index
+    - instead it locks the camera (camera_state_cam{N} = "locked"),
+    stores the combined issue list under current_kit_errors_cam{N}, and
+    returns validation_error=True so routes.py emits a blocking
+    "error:red" event instead of "kit:advanced". The kit only actually
+    advances once the operator resolves via /api/resolve-error (client:
+    "for validation_error its advance" - resolving the red-screen IS the
+    advance for this error type, unlike wrong_part).
+
+    If the switch is off, or no issues were found, this proceeds exactly
+    as before - unconditional advance, same as the original build.
     """
     data = _validate_validate_kit_payload(form)
 
@@ -521,10 +843,65 @@ def validate_kit(activities_collection, form):
             reason=REASON_CAMERA_COMPLETED,
         )
 
+    # NEW - locked camera rejects further validate_kit calls too (same
+    # reason code as record_detection's own lock check).
+    if _is_camera_locked(activity_doc, cam_id):
+        raise ValidationError(
+            f'Camera {cam_id} on table {data["table_id"]} is locked pending operator '
+            f"resolution of an active error - validation ignored.",
+            reason=REASON_CAMERA_LOCKED,
+        )
+
     field = _kit_index_field(cam_id)
     old_index = activity_doc.get(field, 1)
-    new_index = old_index + 1
     now = _now_iso()
+
+    # NEW - validation_error check, BEFORE any advance. Issues are
+    # always computed (even if the master switch is off - client: "we
+    # dont raise alert but still logged in backend"), but only lock +
+    # block when the switch is on AND at least one issue exists.
+    issues = _find_validation_issues(activity_doc, cam_id, old_index)
+    switches = _camera_alert_switches(activity_doc, cam_id)
+    should_raise_validation_error = switches["alert_validation_error"] and bool(issues)
+
+    if should_raise_validation_error:
+        error_payload = {
+            "error_type": ERROR_TYPE_VALIDATION,
+            "kit_index": old_index,
+            "issues": issues,
+            "image_path": None,  # validate_kit's own image, if sent, is
+            # saved to disk by routes.py but not otherwise attached here
+            # (same "discarded beyond disk" convention already in place
+            # for validate_kit's image before this session).
+            "detected_at": now,
+        }
+        activities_collection.update_one(
+            {"_id": activity_doc["_id"]},
+            {
+                "$set": {
+                    "updated_at": now,
+                    _camera_state_field(cam_id): CAMERA_STATE_LOCKED,
+                    _current_kit_errors_field(cam_id): error_payload,
+                }
+            },
+        )
+        return {
+            "table_id": data["table_id"],
+            "cam_id": cam_id,
+            "activity_id": str(activity_doc["_id"]),
+            "validation_error": True,
+            "error": error_payload,
+            # Kept for routes.py's response-shape consistency even
+            # though no advance happened - new_kit_index equals the
+            # OLD index here, since nothing moved.
+            "new_kit_index": old_index,
+            "is_completed": False,
+            "kit_start_time": None,
+            "activity_fully_completed": False,
+            "completed_at": None,
+        }
+
+    new_index = old_index + 1
 
     activities_collection.update_one(
         {"_id": activity_doc["_id"]},
@@ -562,11 +939,168 @@ def validate_kit(activities_collection, form):
         "table_id": data["table_id"],
         "cam_id": cam_id,
         "activity_id": str(activity_doc["_id"]),
+        "validation_error": False,
+        "error": None,
         "new_kit_index": new_index,
         "is_completed": is_now_completed,
         "kit_start_time": now,
         "activity_fully_completed": activity_fully_completed,
         "completed_at": now if activity_fully_completed else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# resolve_error - the /api/resolve-error handler's core logic (NEW)
+# ---------------------------------------------------------------------------
+
+CHOSEN_OPTION_SYSTEM_ERROR = "system_error"
+CHOSEN_OPTION_PROCESS_ERROR = "process_error"
+ALLOWED_CHOSEN_OPTIONS = (CHOSEN_OPTION_SYSTEM_ERROR, CHOSEN_OPTION_PROCESS_ERROR)
+
+
+def resolve_error(activities_collection, table_id, cam_id, chosen_option, comment):
+    """Operator resolves the active red-screen on one camera - the only
+    way a locked camera becomes open again.
+
+    chosen_option must be "system_error" or "process_error" (the two
+    buttons on the red-screen); comment is optional free text.
+
+    Behavior differs by error_type (client's explicit distinction):
+      - "validation_error": resolving IS the advance - kit index moves
+        forward in this SAME call, exactly like a normal validate_kit
+        would (timing stamps included), since a validation_error only
+        exists on the kit that was just about to be validated.
+      - "wrong_part": kit index does NOT change - the camera simply
+        unlocks. DeepStream must send its own separate validate_now
+        afterward, same as any other kit.
+
+    In BOTH cases, the resolved error (original error object + a new
+    "resolution" key: {chosen_option, comment, resolved_at}) is
+    permanently appended to detections.<cam>.<kit_index>.errors (a new
+    array, sibling to "events"/"timing") - client: "every wrong_part
+    error... gets its own permanent entry under that kit, same as
+    validation_error", even though only validation_error also advances.
+
+    Raises ValidationError (reason=REASON_NO_LIVE_ACTIVITY) if the table
+    has no live activity, or a plain validation_error (default reason)
+    if the camera isn't actually locked / chosen_option is invalid -
+    these are operator-facing input problems, not camera-lock states,
+    so they don't need their own reason codes.
+    """
+    activity_doc = activities_collection.find_one(
+        {"table_id": table_id, "status": "live"}
+    )
+    if not activity_doc:
+        raise ValidationError(
+            f"No live activity found on table {table_id}.",
+            reason=REASON_NO_LIVE_ACTIVITY,
+        )
+
+    if chosen_option not in ALLOWED_CHOSEN_OPTIONS:
+        raise ValidationError(
+            f'chosen_option must be one of {", ".join(ALLOWED_CHOSEN_OPTIONS)}.'
+        )
+
+    active_error = activity_doc.get(_current_kit_errors_field(cam_id))
+    if not active_error:
+        raise ValidationError(
+            f"Camera {cam_id} has no active error to resolve."
+        )
+
+    now = _now_iso()
+    comment = (comment or "").strip() or None
+
+    resolved_error = dict(active_error)
+    resolved_error["resolution"] = {
+        "chosen_option": chosen_option,
+        "comment": comment,
+        "resolved_at": now,
+    }
+
+    kit_index = active_error["kit_index"]
+    errors_path = f"{_kit_path(cam_id, kit_index)}.errors"
+
+    update = {
+        "$push": {errors_path: resolved_error},
+        "$set": {
+            "updated_at": now,
+            _camera_state_field(cam_id): CAMERA_STATE_OPEN,
+            _current_kit_errors_field(cam_id): None,
+        },
+    }
+
+    is_validation_error = active_error.get("error_type") == ERROR_TYPE_VALIDATION
+
+    # NEW - for a wrong_part resolution, ALSO write the resolution back
+    # onto that SAME occurrence's card in wrong_part_cards (client:
+    # "operator choise... should be indicated by P or S outside the
+    # card but associated very near to card" - the card needs its own
+    # resolution to render that badge). Matched by detected_at (unique
+    # enough within one kit's card list) via Mongo's arrayFilters, since
+    # wrong_part_cards is an array of embedded documents, not a single
+    # value $set can target directly. validation_error has no matching
+    # card to update (its issues live only in current_kit_errors_cam{N}
+    # / detections.errors, never in wrong_part_cards).
+    array_filters = None
+    if not is_validation_error and active_error.get("wrong_part_detected_at"):
+        wrong_part_cards_path = f"{_kit_path(cam_id, kit_index)}.wrong_part_cards"
+        update["$set"][f"{wrong_part_cards_path}.$[card].resolution"] = {
+            "chosen_option": chosen_option,
+            "comment": comment,
+            "resolved_at": now,
+        }
+        array_filters = [{"card.detected_at": active_error.get("wrong_part_detected_at")}]
+
+    new_kit_index = kit_index
+    kit_start_time = None
+    is_now_completed = False
+    activity_fully_completed = False
+
+    if is_validation_error:
+        # Resolving IS the advance - identical timing-stamp logic to
+        # validate_kit's own normal-advance path (client: "for
+        # validation_error its advance").
+        new_kit_index = kit_index + 1
+        update["$set"][_kit_index_field(cam_id)] = new_kit_index
+        update["$set"][f"{_kit_path(cam_id, kit_index)}.timing.validated_at"] = now
+        update["$set"][f"{_kit_path(cam_id, new_kit_index)}.timing.actual_kit_start_time"] = now
+        kit_start_time = now
+
+        target = activity_doc.get("quantity_required", 0)
+        is_now_completed = target > 0 and new_kit_index > target
+        if is_now_completed:
+            other_cam_id = "cam2" if cam_id == "cam1" else "cam1"
+            other_index = activity_doc.get(_kit_index_field(other_cam_id), 1)
+            other_completed = target > 0 and other_index > target
+            if other_completed:
+                activity_fully_completed = True
+    # else (wrong_part): kit index untouched entirely - camera just
+    # unlocks, per client's explicit call.
+
+    if array_filters:
+        activities_collection.update_one(
+            {"_id": activity_doc["_id"]}, update, array_filters=array_filters
+        )
+    else:
+        activities_collection.update_one({"_id": activity_doc["_id"]}, update)
+
+    return {
+        "table_id": table_id,
+        "cam_id": cam_id,
+        "activity_id": str(activity_doc["_id"]),
+        "error_type": active_error.get("error_type"),
+        "new_kit_index": new_kit_index,
+        "is_completed": is_now_completed,
+        "kit_start_time": kit_start_time,
+        "activity_fully_completed": activity_fully_completed,
+        "completed_at": now if activity_fully_completed else None,
+        # NEW - "S"/"P" for routes.py's "error:resolved" broadcast, so
+        # monitor.js can render the resolution badge OUTSIDE the
+        # wrong_part card it created when the red-screen first appeared
+        # (client: "operator choise... indicated by P or S"). Not
+        # meaningful for validation_error (no matching card exists), but
+        # harmless to include either way.
+        "resolution_code": "S" if chosen_option == CHOSEN_OPTION_SYSTEM_ERROR else "P",
     }
 
 

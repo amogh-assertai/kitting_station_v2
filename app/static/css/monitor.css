@@ -310,6 +310,143 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- Blocking red-screen (NEW this session) ----------
+   Reuses the SAME .detection-popup element/positioning already built
+   for the brief green/red pop-up (client's original call: red-screen
+   should look like the green pop-up, just extended) - only the
+   "--blocking" modifier and its children below are new. No
+   auto-hide timer applies to this state (monitor.js never sets one),
+   so it simply stays visible until the operator resolves it. */
+
+.detection-popup--blocking .detection-popup__meta {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-sm);
+}
+
+.detection-popup--blocking .detection-popup__part {
+  text-align: left;
+  font-size: 1.0625rem;
+}
+
+/* FIX - hidden by default (equal-specificity single-class selectors
+   below used to declare "display: flex" unconditionally, which won the
+   cascade over an earlier attempt at a hide-by-default rule - same-
+   specificity rules resolve by SOURCE ORDER, so the fix is to declare
+   layout properties here directly, `display` included, rather than as
+   a separate duplicate rule further down the file). Only
+   .detection-popup--blocking (added exclusively by showErrorScreen(),
+   never by showPopup() - see monitor.js) reveals them. */
+.detection-popup__issues {
+  display: none;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.detection-popup--blocking .detection-popup__issues {
+  display: flex;
+}
+
+.detection-popup__issue-line {
+  background-color: rgba(0, 0, 0, 0.18);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.6rem;
+}
+
+.detection-popup__error-actions {
+  display: none;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.detection-popup--blocking .detection-popup__error-actions {
+  display: flex;
+}
+
+.error-option-btn {
+  flex: 1;
+  min-width: 130px;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  background-color: rgba(0, 0, 0, 0.15);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: var(--transition-theme);
+}
+
+.error-option-btn:hover {
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+.error-option-btn--selected {
+  border-color: #ffffff;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.detection-popup__error-comment {
+  display: none;
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 100px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background-color: rgba(0, 0, 0, 0.15);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.detection-popup--blocking .detection-popup__error-comment {
+  display: block;
+}
+
+.detection-popup__error-comment::placeholder {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.error-submit-btn {
+  display: none;
+  align-self: flex-end;
+  padding: 0.5rem 1.25rem;
+  border-radius: var(--radius-sm);
+  border: none;
+  background-color: #ffffff;
+  color: #8f1d1d;
+  font-weight: 700;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.error-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error-submit-btn:not(:disabled):hover {
+  background-color: #f2f2f2;
+}
+
+.detection-popup--blocking .error-submit-btn {
+  display: block;
+}
+
+/* Camera panel's locked visual cue - a thin red outline around the
+   whole panel, distinguishing "locked, waiting on operator" at a
+   glance even in the brief instant before the pop-up itself finishes
+   rendering, and for anyone glancing at the OTHER camera's still-open
+   panel for comparison. */
+.camera-panel[data-camera-locked] {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 1px #dc2626;
+}
+
 .camera-panel__header {
   display: flex;
   align-items: center;
@@ -406,6 +543,19 @@
   margin-bottom: var(--spacing-md);
 }
 
+/* Wraps each part-card (see monitor.html/monitor.js) - the GRID lays
+   out .part-card-wrapper as its direct children instead of .part-card
+   directly. The S/P resolution badge is now positioned OUTSIDE the
+   card via absolute positioning (see .part-card__resolution-badge
+   below) - hanging off the card's own top-right corner - so this
+   wrapper no longer needs to be a flex row; it's a plain block that
+   simply establishes the positioning context the badge's negative
+   offset needs to escape the card's own bounds without being clipped
+   by the grid cell. */
+.part-card-wrapper {
+  position: relative;
+}
+
 .part-card {
   position: relative;
   border: 1px solid var(--color-border);
@@ -422,6 +572,32 @@
 
 [data-theme="dark"] .part-card--completed {
   background-color: #04342c;
+}
+
+/* NEW - neglected + wrong_part cards are red-tinted (client's explicit
+   call), distinguishing them from a normal green completed card at a
+   glance, REGARDLESS of the .part-card--completed base styling above
+   (higher specificity via the extra class, so this wins the cascade
+   without needing !important). */
+.part-card--neglected,
+.part-card--wrong_part {
+  border-left-color: #dc2626;
+  background-color: #fbe2e2;
+}
+
+[data-theme="dark"] .part-card--neglected,
+[data-theme="dark"] .part-card--wrong_part {
+  background-color: #4a1414;
+}
+
+.part-card--neglected .part-card__qty,
+.part-card--wrong_part .part-card__qty {
+  color: #8f1d1d;
+}
+
+[data-theme="dark"] .part-card--neglected .part-card__qty,
+[data-theme="dark"] .part-card--wrong_part .part-card__qty {
+  color: #f5b8b8;
 }
 
 .part-card__name {
@@ -447,6 +623,24 @@
   color: #9fe1cb;
 }
 
+/* NEW - "Neglected" / "Unrecognized" label (client: "have indication in
+   the card that its neglected part" / info should be "clearly" shown).
+   Sits where .part-card__qty would normally be for a wrong_part card
+   (which has no quantity), or alongside it for a neglected card. */
+.part-card__type-label {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #8f1d1d;
+  margin-top: 0.1rem;
+}
+
+[data-theme="dark"] .part-card__type-label {
+  color: #f5b8b8;
+}
+
 .part-card__warning {
   position: absolute;
   bottom: 0.4rem;
@@ -466,6 +660,31 @@
   color: var(--color-bg);
   padding: 0.1rem 0.4rem;
   border-radius: var(--radius-sm);
+}
+
+/* S/P resolution badge - "hanging" off the card's own top-right corner
+   (client: "put in right corner outside... hanging to card in
+   right-top") - absolutely positioned against .part-card-wrapper
+   (position: relative, above), with a small negative offset so it
+   visually overlaps the corner rather than sitting flush inside or
+   fully outside it. Only rendered for a resolved wrong_part card (see
+   monitor.html/monitor.js) - system_error -> "S", process_error -> "P". */
+.part-card__resolution-badge {
+  position: absolute;
+  top: -0.4rem;
+  right: -0.4rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background-color: var(--color-text-primary);
+  color: var(--color-bg);
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 2px solid var(--color-bg);
 }
 
 /* ---------- Per-camera Kit timer hidden state ---------- */
