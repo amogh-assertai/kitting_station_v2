@@ -11,52 +11,63 @@ detection-ingest blueprint, see `TSD_LIVE_KITTING_ACTIVITIES.md`.
 |---|---|
 | Backend | Flask, Blueprints |
 | Templates | Jinja2, server-rendered |
-| Real-time | **Flask-SocketIO — now wired.** Powers live detection pop-ups, kit-advance sync, and sound-toggle sync on the Live Kitting Activities monitor page. See `TSD_LIVE_KITTING_ACTIVITIES.md`. |
-| Database | MongoDB (`kitting_station_v2`) — connected for Current Kits Configuration, Table Settings, and Live Kitting Activities (including all detection data, embedded — no separate detection collection); History does not use it yet |
+| Real-time | **Flask-SocketIO — wired and fully live.** Powers detection pop-ups, kit-advance sync, sound-toggle sync, and whole-activity-completion sync on the Live Kitting Activities monitor page. See `TSD_LIVE_KITTING_ACTIVITIES.md`. |
+| Database | MongoDB (`kitting_station_v2`) — connected for Current Kits Configuration, Table Settings, and Live Kitting Activities (including all detection data, kit timing, and completion state, all embedded on the activity document — no separate collection); History does not use it yet |
 | CSS | Plain CSS + custom properties. No Tailwind/Bootstrap, no build step |
 | JS | Vanilla JS only. No framework, no bundler, no inline `<script>` in templates. One exception: `app/static/js/vendor/socket.io.min.js` is a self-hosted third-party library (see below) |
 | Config | `config.yaml` (non-secret) + `.env` (secrets), merged by a loader module. No hardcoded values in app code |
-| File storage | Filesystem (`data/`), namespaced per `table_id` — used for PQPR upload, Table Settings' audio uploads, and (new) saved detection frames |
+| File storage | Filesystem (`data/`), namespaced per `table_id` — used for PQPR upload, Table Settings' audio uploads, and saved detection frames |
+| Kiosk deployment | Chrome kiosk mode, launched via a `.bat` (Windows) / `.desktop`+`.sh` (Ubuntu) pair — see `launchers/README.md` at the project root |
 
 ## Project structure
 
 ```
 station_monitor/
-├── app.py                          # entry point - now calls socketio.run(app, ...) instead of app.run(...)
+├── app.py                          # entry point - calls socketio.run(app, ...) instead of app.run(...)
 ├── config.yaml
 ├── .env / .env.example
 ├── requirements.txt
+├── test_kitting_v2_api.py          # standalone CLI test tool for the detection ingest API - see its own docstring
+├── launchers/                       # kiosk-mode launchers, NOT part of the Flask app itself
+│   ├── Kitting_Station_Kiosk.bat   # Windows - double-click to open Chrome in kiosk mode
+│   ├── Kitting_Station_Kiosk.desktop  # Ubuntu launcher icon
+│   ├── kitting-station-kiosk.sh    # Ubuntu - actual launch logic, called by the .desktop file
+│   └── README.md                   # setup steps for both OSes + the autoplay-policy flag explanation
 ├── data/
 │   ├── pqpr/table_<id>/
 │   ├── audio/table_<id>/
-│   └── detections/table_<id>/      # NEW - saved detection frames, <uuid4hex><ext>
+│   └── detections/table_<id>/      # saved detection frames, <uuid4hex><ext>
 ├── app/
-│   ├── __init__.py                 # app factory: now also calls socketio.init_app(app)
-│   ├── extensions.py                # NEW - shared `socketio = SocketIO(...)` singleton
+│   ├── __init__.py                 # app factory: calls socketio.init_app(app), registers cv_ingest_bp
+│   ├── extensions.py                 # shared `socketio = SocketIO(...)` singleton
 │   ├── config/
-│   │   ├── loader.py                # merges config.yaml + .env; now also validates live_kitting.*
+│   │   ├── loader.py                # merges config.yaml + .env; validates live_kitting.* + activity_history
 │   │   └── db.py
 │   ├── blueprints/
 │   │   ├── home/
 │   │   ├── live_kitting_activities/
-│   │   │   ├── routes.py               # + passes table_configuration collection into create_live_activity()
-│   │   │   └── activities_data.py      # + table_settings snapshot, green sound toggle seeding, real detection counts in build_monitor_view()
-│   │   ├── cv_ingest/                   # NEW blueprint - detection ingest from local DeepStream app
+│   │   │   ├── routes.py               # passes table_configuration collection into create_live_activity()
+│   │   │   └── activities_data.py      # table_settings snapshot, sound toggle seeding, real detection
+│   │   │                                # counts + completion state + per-kit timer start in build_monitor_view()
+│   │   ├── cv_ingest/                   # detection ingest blueprint, from local DeepStream app
 │   │   │   ├── __init__.py             # no url_prefix; routes are /api/...
-│   │   │   ├── routes.py               # /api/detection-update, /api/validate-kit, /api/toggle-sound, /api/detection-image/<dir>/<file>
-│   │   │   └── detection_data.py       # validation, image save, count/sound resolution, Mongo writes
+│   │   │   ├── routes.py               # /api/detection-update, /api/validate-kit, /api/toggle-sound,
+│   │   │   │                            # /api/detection-image/<dir>/<file>, Socket.IO room join
+│   │   │   └── detection_data.py       # validation, image save, count/sound/timing resolution, completion
+│   │   │                                # detection (both per-camera and whole-activity), Mongo writes
 │   │   ├── history/
 │   │   └── configuration/
 │   ├── templates/
 │   │   ├── base.html
-│   │   └── <blueprint_name>/*.html     # live_kitting_activities/monitor.html now includes detection pop-ups + sound toggle UI
+│   │   └── <blueprint_name>/*.html     # live_kitting_activities/monitor.html: detection pop-ups, sound
+│   │                                    # toggle, per-kit timer, "Kits Completed" state, completion overlay
 │   └── static/
 │       ├── css/
-│       │   └── monitor.css             # + detection pop-up, sound toggle styling
+│       │   └── monitor.css             # detection pop-up, sound toggle, kit timer, completion overlay styling
 │       ├── js/
-│       │   ├── monitor.js              # + Socket.IO client wiring, sound playback
+│       │   ├── monitor.js              # Socket.IO client wiring, all live-update handlers, sound playback
 │       │   └── vendor/
-│       │       └── socket.io.min.js    # NEW - self-hosted Socket.IO v4.7.5 client
+│       │       └── socket.io.min.js    # self-hosted Socket.IO v4.7.5 client
 │       └── images/watts_logo.png
 ```
 
@@ -139,6 +150,18 @@ audio URL both follow this — `cv_ingest/routes.py` builds them via
 `configuration.table_settings_audio_file` route for audio, rather than
 duplicating file-serving logic) and sends them over the socket payload;
 `monitor.js` just uses whatever URL it's given.
+
+## API error contract (cv_ingest blueprint)
+
+Every `cv_ingest` endpoint (`/api/detection-update`, `/api/validate-kit`,
+`/api/toggle-sound`) returns `{"success": false, "reason": "<code>",
+"message": "<human-readable>"}` on failure, where `reason` is one of
+`no_live_activity`, `camera_completed`, `validation_error`, or
+`database_error` — a caller (the DeepStream application or anything
+else) can branch on `reason` without string-parsing `message`. Full
+detail, including a real bug found and fixed here (a "no live activity"
+error was briefly miscategorized as `validation_error`), in
+`TSD_LIVE_KITTING_ACTIVITIES.md`'s "API error contract" section.
 
 ## Known gaps / next-session TODO
 

@@ -2,8 +2,8 @@
 
 Functional requirements for the Live Kitting Activities section:
 **landing page**, **create activity flow (station → camera check)**, the
-**monitor page**, and **live detection ingest** (new this revision).
-Currently applies to **Table 1 (HVGKC-CELL) only**.
+**monitor page**, and **live detection ingest**. Currently applies to
+**Table 1 (HVGKC-CELL) only**.
 
 ## Concept
 
@@ -11,129 +11,157 @@ A **kitting activity** is one run of packing a specific kit, on a
 specific table, against a specific order. Only **one live activity per
 table** is allowed at a time.
 
-**New this revision:** part counts on the monitor page are no longer
-static — they update live from a local camera/AI detection system
-(DeepStream) mounted at each table, one camera per side (Cam 1, Cam 2).
+Part counts on the monitor page update live from a local camera/AI
+detection system (DeepStream) mounted at each table, one camera per
+side (Cam 1, Cam 2). Everything camera-related — progress, timers,
+sound, completion — happens **independently per camera**, unless stated
+otherwise.
 
 ## Landing page
 
-Unchanged from prior revision — see previous section for card contents,
-Complete Manually flow, etc.
+Unchanged from the original build — see the app-wide FRD/TSD index for
+card contents, Complete Manually flow, etc.
 
 ## Create activity flow
 
 Unchanged functionally, with one addition: when an activity is created,
 the table's current **Table Settings** (Audio Settings, Expected Client
 IPs, Push Notification settings) are captured as a snapshot belonging to
-that activity. This snapshot is used immediately for detection sound
-(see below); the rest is captured for a future iteration and not yet
+that activity. Audio Settings drives detection sound immediately (see
+below); the rest is captured for a future iteration and not yet
 surfaced anywhere in the UI. Editing Table Settings later does not
 change an already-running activity's snapshot.
 
 ## Monitor page
 
-Full-width, full-height page, unchanged base layout. **New: live
-detection pop-ups and per-camera sound**, described below.
+Full-width, full-height page. Header shows a status pill, both
+cameras' progress bars, a "Total time" clock, and Order/Kit/EDP detail.
+Below that, two camera panels side by side.
 
 ### Header
 
-Unchanged — Back button, table badge, status pill, Cam 1/Cam 2 progress
-bars, Total time, Order/Kit/EDP, "See current settings" placeholder.
+- **Status pill** reflects the activity's real status.
+- **Cam 1 / Cam 2 progress bars** show kits completed out of the
+  target, e.g. "3/10 · 30%" — capped at 100% even if a camera's
+  internal counter ever sits one step past the target (see
+  "Completion," below); never shows something like "120%."
+- **Total time** counts up from when the activity was created, and
+  **freezes permanently** the moment BOTH cameras finish all their
+  kits — it does not keep counting after the activity is effectively
+  done.
+- **Order / Kit name / EDP** — read-only summary.
+- **"See current settings"** — placeholder, behavior not yet defined.
 
 ### Per-camera panels (Cam 1 left, Cam 2 right)
 
-Each panel shows, as before: camera label, activity timer, History
-button (placeholder), current kit index ("Kit #N"), Completed/Pending
-part cards.
-
-**New: sound toggle**, immediately to the right of "Kit #N" — a small
-speaker icon button. Tapping it turns that camera's **detection sound**
-on or off for the rest of this activity (see "Detection sound" below).
-This does **not** change the table's saved default in Configuration →
-Table Settings — it only affects the current activity, and reverts to
-the table's saved default the next time a new activity is created on
-that table.
+Each panel shows:
+- Camera label
+- **Kit timer** — how long the camera has been working on its
+  **current** kit. This is separate from "Total time": it resets to
+  **0:00:00** every time that camera's kit is validated, so it's always
+  showing time-on-this-kit, not time-on-the-whole-activity. Once that
+  camera finishes all its kits, this timer disappears entirely — there's
+  no "current kit" left for it to measure.
+- **"Kit #N"** label, with a small speaker icon next to it (see "Sound,"
+  below)
+- A **History** button (placeholder)
+- **Completed** and **Pending** sections, each showing part cards with
+  name and "Qty: X / Y." A part moves from Pending to Completed the
+  moment its detected quantity reaches what's required, and is tagged
+  **"Last detected"** if it was the most recent successful detection on
+  that camera (only one card ever carries this tag at a time).
 
 ### Live detection pop-up
 
-When the local detection system reports that a part was seen on a
-camera, that camera's **entire half of the page** — the Back button
-row, the shared status/progress header, and that camera's panel — is
-replaced for a few seconds by a large pop-up showing:
+When the detection system reports a part was seen on a camera, that
+camera's **entire half of the page** — the Back button row, the shared
+header, and that camera's panel — is replaced for a few seconds by a
+large pop-up showing the part's photo (if sent), a line reading
+**"Detected: `<part name>` | Qty: `<count>` / `<required>`"** (or just
+**"Detected: `<part name>`"** for an unexpected part), and the detection
+time. Green for an expected part, red for an unexpected one. Each color
+has its own separately-configurable display duration. While one
+camera's pop-up is showing, the other camera's half is completely
+unaffected.
 
-- The part's photo (if the detection system sent one)
-- A line reading **"Detected: `<part name>` | Qty: `<count>` /
-  `<required>`"** for an expected part, or **"Detected: `<part name>`"**
-  for an unexpected one
-- The time of detection
+Unexpected-part detections are recorded, but no further alert-handling
+behavior is built yet — full alert-type rules (matching the per-part
+and per-camera alert settings from Current Kits Configuration) are a
+later build.
 
-The pop-up is colored **green** for an expected part (one that's
-configured for that camera in this kit) and **red** for an unexpected
-one. It disappears automatically after a short, separately-configurable
-duration for each color, reverting to the normal Completed/Pending view.
-While a pop-up is showing on one camera, the other camera's half of the
-page is completely unaffected — each camera's pop-up never crosses into
-the other's side.
+### Sound
 
-Underneath the pop-up, the relevant part card is updated immediately: an
-expected part's count goes up, and once it reaches the required
-quantity the card moves from Pending to Completed, tagged **"Last
-detected"**. Only the single most-recently-detected part carries this
-tag at any time.
+Each camera can play a short sound on detection, using the audio files
+configured in Configuration → Table Settings → Audio Settings.
 
-**Unexpected parts** (red pop-up): the event is recorded, but no further
-alert-handling behavior is built yet — full alert-type rules (matching
-the per-part "Alert if missing/undercount/overcount" and per-camera
-"Wrong Part Error" settings from Current Kits Configuration) are a later
-build.
-
-### Detection sound
-
-Each camera can play a short sound when a detection happens, using the
-audio files already configured in **Configuration → Table Settings →
-Audio Settings** (Camera 1/2, Green/Red).
-
-- **Expected-part sound (green):** plays once per detection, but only
-  if that camera's sound toggle (next to "Kit #N," see above) is
-  currently on. This toggle starts at whatever the table's saved
-  default is (from Table Settings), and can be freely switched on/off
-  during the activity — the change takes effect immediately, for the
-  part currently being packed, with no need to finish or restart the
-  kit.
+- **Expected-part sound (green):** plays once per detection, only if
+  that camera's sound toggle (the speaker icon next to "Kit #N") is
+  currently on. Starts at the table's saved default and can be switched
+  on/off during the activity, taking effect immediately — no need to
+  finish or restart the kit. **This toggle is visible and synced to
+  everyone currently viewing that activity's monitor page** — if one
+  person switches it, everyone else sees it flip too.
 - **Unexpected-part sound (red):** always follows the table's saved
-  default from Table Settings — there is no per-activity toggle for
-  this one.
+  default — there is no per-activity toggle for this one.
 
-If a camera's slot has no audio file uploaded in Table Settings, no
-sound plays for that camera/color, regardless of the enabled/disabled
-setting.
-
-**Sound toggle state is shared across every screen currently viewing
-this activity** — if one person switches Cam 1's sound off, everyone
-else watching that same activity's monitor page sees the toggle flip
-too, immediately.
+If a camera's slot has no audio file uploaded, no sound plays for that
+camera/color regardless of the enabled/disabled setting.
 
 ### Kit advance ("validate")
 
-When the local detection system signals that a camera's current kit is
-done, that camera's kit index moves forward by one (e.g. "Kit #3" →
-"Kit #4") and its Completed/Pending list resets to a fresh, empty state
-for the new kit. The other camera is not affected. Everything detected
-for the finished kit remains on record — nothing is deleted, it simply
-stops being shown live once a new kit starts. Full pass/fail validation
-rules for a kit before advancing are not built yet; today the signal
-just advances the counter.
+When the detection system signals a camera's current kit is done, that
+camera's kit index moves forward by one (e.g. "Kit #3" → "Kit #4"), its
+Completed/Pending list resets to a fresh, empty state, and its Kit
+timer resets to 0:00:00. The other camera is not affected. Everything
+detected for the finished kit stays on record — nothing is deleted, it
+just stops being shown live once a new kit starts.
+
+### Completion — one camera
+
+Once a camera finishes packing its final kit (the count it's tracking
+reaches the required total), its panel switches to a **"Kits
+Completed"** state: the Completed/Pending sections and cards disappear,
+replaced by a checkmark and "Kits Completed" text. Its Kit timer
+disappears. Its progress bar at the top shows 100%. If someone tries to
+send it another detection or another kit-advance signal after this
+point, that request is rejected with a clear reason rather than
+silently accepted or failing generically.
+
+This can happen to one camera well before the other — they're
+completely independent. The other camera keeps working normally.
+
+### Completion — whole activity
+
+Once **both** cameras have reached "Kits Completed," the activity as a
+whole is finished:
+- "Total time" freezes at that exact moment.
+- The activity is automatically moved out of the live list and into
+  history, marked as completed — no manual "Complete" action needed.
+- Anyone currently viewing the monitor page sees a brief "Activity
+  Completed" confirmation, then is automatically returned to the Live
+  Kitting Activities landing page after a couple of seconds.
+
+## API feedback (for the detection system / any other caller)
+
+Every ingest call returns a clear success/failure result, and on
+failure, a specific reason — not just a generic error:
+- The table has no active kitting run at all
+- This camera has already finished all its kits
+- Some other input problem (missing/invalid field)
+- The database is unreachable
 
 ## Out of scope (not yet built)
 
 - Full alert-type rules for unexpected/wrong-part detections (only the
   visual red pop-up exists)
-- Per-kit timing (both cameras still show the whole activity's elapsed
-  time)
+- A screen to browse a completed kit's recorded detection history and
+  timing (the data is captured — when each kit started, when its first
+  part was detected, when it was validated, and every individual
+  detection's own timestamp — but there's no viewer for it yet)
 - "See current settings" and "History" button behavior
 - Table 2 / Table 3 activities
-- A UI to browse a completed kit's detection history (the data is
-  recorded and retained, but there's no screen to view it yet)
 - Expected Client IPs and Push Notification settings captured in the
   activity snapshot are not yet used anywhere — reserved for a future
   iteration
+- Pass/fail validation rules for a kit before it's allowed to advance
+  (today, a validate signal always just advances the counter)

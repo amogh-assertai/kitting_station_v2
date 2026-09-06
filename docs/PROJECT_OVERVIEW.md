@@ -27,8 +27,8 @@ Runs on laptop monitors and larger fixed screens; no page-level scroll.
 | `docs/tsd/TSD_BASE_LAYOUT.md` | Technical spec of the shell |
 | `docs/frd/FRD_CONFIGURATION.md` | Functional spec of the Configuration section |
 | `docs/tsd/TSD_CONFIGURATION.md` | Technical spec of the Configuration section |
-| `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page, **live detection pop-ups, per-camera sound (new)** |
-| `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec — routes, embedded MongoDB schema, **the `cv_ingest` blueprint, detection pipeline, Socket.IO events, sound resolution (new)** |
+| `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page, live detection pop-ups, per-camera sound, kit timing, completion |
+| `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec — routes, embedded MongoDB schema (including its two schema-history revisions), the `cv_ingest` blueprint, detection pipeline, Socket.IO events, sound resolution, kit-level timing, completion detection, API error contract |
 | `docs/WORKING_STYLE_AND_CONSTRAINTS.md` | How the client works. **Read before making any change or delivering anything.** |
 
 ## Multi-table concept
@@ -49,18 +49,31 @@ to detect against).
   Settings, Expected Client IPs, Push Notification Settings)
 - Live Kitting Activities — landing page, 2-step create-activity flow,
   full-width/height monitor page
-- **Live detection ingest (new this revision):** a local DeepStream
+- **Live detection ingest — fully built:** a local DeepStream
   application posts detection events and kit-advance signals to
   `/api/detection-update` and `/api/validate-kit`. The monitor page
   updates in real time via Socket.IO — part counts, Completed/Pending
   card movement, a full-page-half pop-up (green for an expected part,
-  red for an unexpected one) with the part's photo and detection detail,
-  and per-camera detection sound (green toggleable per activity, red
-  always follows the table's saved default). Kit-advance signals move a
-  camera's current kit index forward independently per camera, with all
-  prior kits' detection data retained as history. See
+  red for an unexpected one) with the part's photo and detection
+  detail, per-camera detection sound (green toggleable per activity
+  and synced across every viewer, red always follows the table's saved
+  default), and a per-camera "Kit timer" that resets to zero on every
+  validate and hides once that camera finishes. Kit-advance signals
+  move a camera's current kit index forward independently per camera,
+  with all prior kits' detection data (timing + full event log)
+  retained as history nested under that kit's own record. Once a
+  camera finishes all its kits it shows a "Kits Completed" state and
+  rejects further detections/validations with a specific reason code;
+  once **both** cameras finish, the whole activity auto-moves to
+  history, "Total time" freezes, and viewers see a brief confirmation
+  before being redirected to the landing page. See
   `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`
   for full detail.
+- **Kiosk deployment** — `launchers/` at the project root has a
+  double-clickable Windows `.bat` and Ubuntu `.desktop`/`.sh` pair that
+  open the monitor in Chrome kiosk mode with the flag required for
+  detection sound to actually play (`--autoplay-policy=no-user-gesture-required`).
+  See `launchers/README.md`.
 - `test_kitting_v2_api.py` — a standalone CLI script for exercising the
   detection ingest API without a real DeepStream box; see the file
   itself for usage (`--tableid --camid --object_detected "<part>"` or
@@ -73,10 +86,13 @@ to detect against).
 - Full alert-type logic for unexpected/wrong-part detections (only the
   visual red pop-up exists so far — no differentiation between
   Validation Error and Wrong Part Error yet)
-- Per-kit timing (both camera panels still show the whole activity's
-  elapsed time, not a per-kit reset)
-- A UI to browse a completed kit's retained detection history (the data
-  is recorded, no viewer exists yet)
+- A UI to browse a completed kit's retained detection/timing history
+  (the data is fully recorded — per-kit start/first-detection/validated
+  timestamps, plus every individual detection event's own timestamp —
+  no viewer exists yet)
+- Validation-image detail storage (`/api/validate-kit` accepts an image
+  but currently discards it after saving to disk — a reserved
+  `validation` key exists in the schema for a future build to populate)
 - History section — placeholder, needs MongoDB
 - No authentication/authorization layer
 
@@ -114,22 +130,30 @@ app/
 │   ├── current_kits_data.py
 │   └── table_settings_data.py
 ├── blueprints/live_kitting_activities/
-│   └── activities_data.py              # + table_settings snapshot, sound toggle seeding, real detection counts
-├── blueprints/cv_ingest/                # NEW - detection ingest from local DeepStream app
-│   └── detection_data.py               # validation, image save, count/sound resolution, Mongo writes
-├── extensions.py                        # NEW - shared socketio singleton
+│   └── activities_data.py              # table_settings snapshot, sound toggle + kit-1-timing seeding,
+│                                         # real detection counts + completion state + kit timer start
+├── blueprints/cv_ingest/                # detection ingest from local DeepStream app
+│   └── detection_data.py               # validation, image save, count/sound/timing resolution,
+│                                         # per-camera + whole-activity completion detection, Mongo writes
+├── extensions.py                        # shared socketio singleton
 ├── config/
-│   ├── loader.py                       # + live_kitting.* validation
+│   ├── loader.py                       # live_kitting.* + activity_history validation
 │   └── db.py
 ├── templates/base.html
 ├── templates/configuration/...
 ├── templates/live_kitting_activities/
-│   └── monitor.html                    # + detection pop-ups, sound toggle UI
+│   └── monitor.html                    # detection pop-ups, sound toggle, kit timer, completion overlay
 └── static/{css,js}/
-    ├── css/monitor.css                 # + detection pop-up, sound toggle styling
+    ├── css/monitor.css                 # detection pop-up, sound toggle, kit timer, completion overlay styling
     └── js/
-        ├── monitor.js                  # + Socket.IO wiring, sound playback
-        └── vendor/socket.io.min.js     # NEW - self-hosted client
+        ├── monitor.js                  # Socket.IO wiring, all live-update handlers, sound playback
+        └── vendor/socket.io.min.js     # self-hosted client
+
+launchers/                               # kiosk-mode deployment, separate from the Flask app
+├── Kitting_Station_Kiosk.bat
+├── Kitting_Station_Kiosk.desktop
+├── kitting-station-kiosk.sh
+└── README.md
 ```
 
 Filesystem storage (gitignored, under `data/`, namespaced per table_id):
