@@ -467,3 +467,55 @@
   padding: 0.1rem 0.4rem;
   border-radius: var(--radius-sm);
 }
+
+/* ---------- Per-camera Kit timer hidden state ---------- */
+/* Explicit [hidden] override, same reasoning as .detection-popup's own
+   override above: a class selector elsewhere in this file sets
+   "display: inline-flex" (or similar) with equal specificity to the
+   browser's default [hidden] rule, so without this the timer could
+   keep showing even when the hidden attribute is present (client's
+   requirement: don't show a camera-wise kit timer once that camera's
+   kits are completed). */
+.camera-panel__timer[hidden] {
+  display: none;
+}
+
+/* ---------- Activity-complete overlay ---------- */
+/* Shown briefly when both cameras finish and the activity auto-moves
+   to history, before monitor.js redirects to the landing page. Covers
+   the whole page - same broad-strokes approach as the detection
+   pop-up's full-page-half coverage, but this one spans the ENTIRE
+   monitor-page (both cameras), not a single camera's half, since the
+   activity as a whole is done, not just one camera's portion of it. */
+
+.activity-complete-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-md);
+  background-color: var(--color-bg);
+}
+
+.activity-complete-overlay[hidden] {
+  display: none;
+}
+
+.activity-complete-overlay__icon {
+  font-size: 3rem;
+  color: #1d9e75;
+}
+
+.activity-complete-overlay__text {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.activity-complete-overlay__subtext {
+  font-size: 0.9375rem;
+  color: var(--color-text-muted);
+}

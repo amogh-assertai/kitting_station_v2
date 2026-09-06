@@ -8,8 +8,8 @@ itself, so a single find_one({"_id": activity_id}) returns the full
 picture for both cameras and every kit iteration - no join, no second
 collection to keep in sync.
 
-Fields added to live_activity_details (all four kept in step by every
-write in this module):
+Fields added to live_activity_details (all kept in step by every write
+in this module):
 
   "current_kit_index_cam1": int          # already existed
   "current_kit_index_cam2": int          # already existed
@@ -28,33 +28,81 @@ write in this module):
   } | null,                              # history.
   "last_detected_cam2": { ... } | null,
 
-  "detections": {                        # AUDIT TRAIL - full event log,
-      "cam1": {                          # write-heavy ($push), rarely
-          "<kit_index>": [               # read (a later History
-              {                          # drill-down, not the live
-                  "detected_part": str,       # monitor page). Kit index
-                  "ai_detected_part_name": str,  # is an int key here
-                  "avg_threshold": float|None,   # (Mongo stores object
-                  "tracking_id": str|None,       # keys as strings on
-                  "image_path": str|None,        # disk regardless, but
-                  "matched": bool,                # this module always
-                  "created_at": iso str,          # treats/casts it as
-              }                                    # an int in Python).
-          ]
+  "detections": {                        # PER-KIT RECORD - one object
+      "cam1": {                          # per kit index, holding
+          "<kit_index>": {               # everything about that kit's
+              "timing": {                # working life in one place
+                  "actual_kit_start_time": iso str,
+                  "first_part_detected_time": iso str | None,
+                  "validated_at": iso str | None,
+              },
+              "validation": {            # RESERVED for a later build -
+                  "image_path": str,     # validate_kit currently sends
+                  "validated_at": iso str,   # an optional image but
+                  ...                        # nothing is stored under
+              } | None,                      # this key yet (see
+                                              # validate_kit's docstring)
+              "events": [                # AUDIT TRAIL - full event log,
+                  {                      # write-heavy ($push to
+                      "detected_part": str,      # events specifically),
+                      "ai_detected_part_name": str,  # rarely read (a
+                      "avg_threshold": float | None,  # later History
+                      "tracking_id": str | None,       # drill-down, not
+                      "image_path": str | None,         # the live
+                      "matched": bool,                   # monitor page).
+                      "created_at": iso str,
+                  }
+              ]
+          }
       },
       "cam2": { ... }
   }
 
+  RESTRUCTURED this session (client's explicit call): kit-level timing
+  used to live in a separate top-level tree, "kit_timings_cam{1,2}". It
+  is now nested INSIDE detections.cam{N}.<kit_index>.timing instead, so
+  everything about one kit (timing, a reserved slot for future
+  validation detail, and the raw detection log) sits under ONE path -
+  "one direction to read" per the client. A future "validate_kit sends
+  an image and validation detail" build should populate the sibling
+  "validation" key at that same path, not invent a new top-level tree.
+
+  Kit index is an int in application code throughout; Mongo stores the
+  nested object key as a string on disk regardless ("1", "2", ...) -
+  this module always re-casts with str(kit_index) on read and relies on
+  Mongo's automatic string-casting of dotted-path segments on write.
+
+  actual_kit_start_time and validated_at are set together, ONE
+  timestamp shared across two kit indices, at the moment validate_kit
+  advances the camera: the OLD kit's validated_at and the NEW kit's
+  actual_kit_start_time are the exact same instant (finishing kit N and
+  starting kit N+1 are the same moment by definition). Kit 1's own
+  actual_kit_start_time is stamped separately at activity creation (see
+  activities_data.create_live_activity) - there's no "kit 0" to validate
+  out of to produce it the normal way.
+
+Completion semantics: current_kit_index_cam{N} can exceed
+quantity_required by exactly one step - e.g. quantity_required=5,
+kit index 5 is a completely normal working kit; validating it advances
+the index to 6, and index 6 (which has no real kit data of its own) is
+the sentinel meaning "this camera has completed all its kits." Checked
+via _is_camera_completed() everywhere it matters (record_detection,
+validate_kit, and the monitor page's build_monitor_view). Once
+completed, BOTH further detections AND further validate_kit calls for
+that camera are rejected with a clear message (ValidationError) - never
+silently accepted, never a generic/opaque error. Independent per
+camera - cam1 completing has no effect on cam2's own state.
+
 Sizing note (confirmed acceptable at stated scale: 7 components/camera,
 up to ~400 kits/activity): worst case is roughly 1-4MB for the whole
-`detections` audit array across a full activity lifetime - comfortably
-under MongoDB's 16MB document cap. If a future table runs far larger
-volumes, `detections` (the audit log only - NOT part_counts/
-last_detected, which are tiny) is the field to consider splitting out
+`detections` tree across a full activity lifetime - comfortably under
+MongoDB's 16MB document cap. If a future table runs far larger volumes,
+each kit's "events" array (the audit log only - NOT "timing", which
+stays tiny regardless of volume) is the piece to consider splitting out
 first.
 
-validate_kit() does NOT touch part_counts/last_detected/detections for
-the OLD kit index - that data stays exactly as it was, forming that
+validate_kit() does NOT touch part_counts/last_detected/detections.events
+for the OLD kit index - that data stays exactly as it was, forming that
 kit's permanent history. The "reset" the UI sees for the new kit is
 simply because the new kit_index has no key yet in these maps (reads
 default to 0 / None), not because anything was deleted.
@@ -67,7 +115,23 @@ CAM_IDS = ("cam1", "cam2")
 
 class ValidationError(Exception):
     """Raised on bad input - caught in routes.py, turned into a 400 JSON
-    response, never a 500."""
+    response, never a 500. Carries an optional machine-readable `reason`
+    code (see REASON_* constants below) so routes.py can return a
+    structured {success, reason, message} response instead of lumping
+    every failure under one generic "validation_error" bucket."""
+
+    def __init__(self, message, reason="validation_error"):
+        super().__init__(message)
+        self.reason = reason
+
+
+# Machine-readable reason codes - used by routes.py to build the
+# {success, reason, message} response shape. Kept as constants (not
+# inline strings scattered through this file) so routes.py's mapping
+# from exception -> reason stays a single source of truth.
+REASON_NO_LIVE_ACTIVITY = "no_live_activity"
+REASON_CAMERA_COMPLETED = "camera_completed"
+REASON_VALIDATION_ERROR = "validation_error"
 
 
 def _now_iso():
@@ -88,6 +152,13 @@ def normalize_cam_id(raw_cam_id):
 
 def _kit_index_field(cam_id):
     return f"current_kit_index_{cam_id}"
+
+
+def _kit_path(cam_id, kit_index):
+    """Base dotted path for one kit's whole record -
+    detections.cam1.<kit_index> - the root that "timing", "validation",
+    and "events" all nest under."""
+    return f"detections.{cam_id}.{kit_index}"
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +267,19 @@ def _find_matching_part(activity_doc, cam_id, detected_part):
 # record_detection - the /api/detection-update handler's core logic
 # ---------------------------------------------------------------------------
 
+def _is_camera_completed(activity_doc, cam_id):
+    """True once this camera has validated past its last real kit - i.e.
+    current_kit_index_cam{N} > quantity_required (confirmed semantics:
+    if quantity_required=5, kit index 5 is a normal working kit like any
+    other; validating it advances the index to 6, and THAT is the
+    sentinel meaning "done" - index 6 has no real kit data of its own).
+    Checked independently per camera - cam1 completing never affects
+    cam2's own state."""
+    kit_index = activity_doc.get(_kit_index_field(cam_id), 1)
+    target = activity_doc.get("quantity_required", 0)
+    return target > 0 and kit_index > target
+
+
 def record_detection(activities_collection, form, image_path):
     """Validates + persists one detection event directly onto the
     live_activity_details document, and returns everything routes.py
@@ -208,10 +292,22 @@ def record_detection(activities_collection, form, image_path):
     hands back the updated document in the same round trip, so the new
     counter value is read directly off the response - no separate read.
 
+    Rejects (ValidationError, reason=REASON_NO_LIVE_ACTIVITY) if the
+    table has no live activity at all, and separately (ValidationError,
+    reason=REASON_CAMERA_COMPLETED) if this camera has already completed
+    all its kits (current_kit_index_cam{N} > quantity_required) - these
+    are DISTINCT failure reasons, not both lumped under a generic
+    "validation_error" (client's explicit ask: the API should say WHY,
+    not just fail).
+
     One update, all in one operation:
-      1. detections.<cam>.<kit_index>          - $push, full event (audit)
-      2. part_counts_<cam>.<kit_index>.<part>  - $inc by 1 (ONLY if matched)
-      3. last_detected_<cam>                    - $set (ONLY if matched)
+      1. detections.<cam>.<kit_index>.events       - $push, full event (audit)
+      2. part_counts_<cam>.<kit_index>.<part>      - $inc by 1 (ONLY if matched)
+      3. last_detected_<cam>                        - $set (ONLY if matched)
+      4. detections.<cam>.<kit_index>.timing.first_part_detected_time -
+         $set, ONLY if this is the first detection recorded for this
+         kit index on this camera (never overwritten after the first
+         write - see the module docstring's "timing" section).
 
     The initial find_one() to fetch parts_configured/kit_index for
     matching is unavoidable - matching against configured parts has to
@@ -236,11 +332,21 @@ def record_detection(activities_collection, form, image_path):
     if not activity_doc:
         raise ValidationError(
             f'No live activity found on table {data["table_id"]} - '
-            f"cannot record a detection for a table with no active kitting run."
+            f"cannot record a detection for a table with no active kitting run.",
+            reason=REASON_NO_LIVE_ACTIVITY,
+        )
+
+    cam_id = data["cam_id"]
+
+    if _is_camera_completed(activity_doc, cam_id):
+        raise ValidationError(
+            f'Camera {cam_id} on table {data["table_id"]} has already completed '
+            f'all {activity_doc.get("quantity_required")} kits for this activity - '
+            f"no further detections are accepted for this camera.",
+            reason=REASON_CAMERA_COMPLETED,
         )
 
     activity_id = activity_doc["_id"]
-    cam_id = data["cam_id"]
     kit_index = activity_doc.get(_kit_index_field(cam_id), 1)
     part_name = data["detected_part"]
 
@@ -261,13 +367,18 @@ def record_detection(activities_collection, form, image_path):
 
     # Dotted paths - MongoDB creates intermediate objects/arrays as
     # needed, so no separate "does this kit_index key exist yet" check
-    # is required before the first write for a given kit.
-    detections_path = f"detections.{cam_id}.{kit_index}"
+    # is required before the first write for a given kit. Everything
+    # about this kit now nests under ONE base path (kit_base) - events,
+    # timing, and (reserved) validation all sit together, per the
+    # client's explicit restructure request.
+    kit_base = _kit_path(cam_id, kit_index)
+    events_path = f"{kit_base}.events"
     count_path = f"part_counts_{cam_id}.{kit_index}.{part_name}"
     last_detected_path = f"last_detected_{cam_id}"
+    first_part_path = f"{kit_base}.timing.first_part_detected_time"
 
     update = {
-        "$push": {detections_path: event},
+        "$push": {events_path: event},
         "$set": {"updated_at": now},
     }
     if matched:
@@ -286,6 +397,26 @@ def record_detection(activities_collection, form, image_path):
             # need the aggregation-pipeline update form for that, not
             # worth the added complexity for one field).
         }
+
+    # first_part_detected_time is set on EVERY detection call (matched or
+    # not - client's spec is "first part detected", not "first MATCHED
+    # part", since even a wrong-part detection means someone started
+    # working this kit), but only takes effect the first time, via
+    # $setOnInsert-style semantics achieved here with a conditional
+    # pre-check rather than a Mongo-side "set if not exists" (Mongo's
+    # $set always overwrites; there's no native "set only if missing" for
+    # a nested path short of $setOnInsert, which only fires on document
+    # INSERT, not on updates to an existing doc) - so this is checked in
+    # Python against the pre-update document instead.
+    existing_first_part = (
+        activity_doc.get("detections", {})
+        .get(cam_id, {})
+        .get(str(kit_index), {})
+        .get("timing", {})
+        .get("first_part_detected_time")
+    )
+    if not existing_first_part:
+        update["$set"][first_part_path] = now
 
     updated_doc = activities_collection.find_one_and_update(
         {"_id": activity_id},
@@ -335,10 +466,36 @@ def record_detection(activities_collection, form, image_path):
 def validate_kit(activities_collection, form):
     """Advances ONE camera's current_kit_index forward by 1 (cam1/cam2
     advance independently, confirmed). Does NOT touch part_counts,
-    last_detected, or detections for the camera at all - the old kit
-    index's data stays exactly as-is, forming permanent history. The
-    "reset" the UI sees for the new kit happens naturally because the
-    new kit_index has no key yet in part_counts (reads default to 0).
+    last_detected, or the OLD kit's events at all - that data stays
+    exactly as-is, forming permanent history. The "reset" the UI sees
+    for the new kit happens naturally because the new kit_index has no
+    key yet in part_counts (reads default to 0).
+
+    Rejects (ValidationError, reason=REASON_NO_LIVE_ACTIVITY /
+    REASON_CAMERA_COMPLETED - distinct reason codes, not one generic
+    bucket) if the table has no live activity, or if this camera has
+    already completed all its kits (current_kit_index_cam{N} >
+    quantity_required already) - confirmed semantics: the call that
+    takes the index from quantity_required to quantity_required+1 is
+    itself a normal, ALLOWED validate (it's what marks the camera
+    "done"); only a call AFTER that point is rejected.
+
+    Kit timing: stamps "validated_at" on the OLD kit index (the one
+    just finished) and "actual_kit_start_time" on the NEW kit index -
+    both the SAME timestamp, since finishing kit N and starting kit N+1
+    are the same instant by definition. Kit 1's own
+    actual_kit_start_time is stamped separately, at activity creation
+    (see activities_data.create_live_activity) - there is no "kit 0" to
+    validate out of. Both now write under
+    detections.<cam>.<kit_index>.timing (restructured this session -
+    see module docstring) rather than a separate kit_timings_cam{N} tree.
+
+    A "validation" image (optional, per the API contract) is currently
+    only saved to disk and otherwise discarded - see routes.py. This
+    function reserves detections.<cam>.<kit_index>.validation as WHERE
+    that detail should be written once a later build actually stores it
+    (image path, pass/fail detail, etc.) - not populated yet, so this
+    key does not appear in the document until that build happens.
 
     Full validation-before-advance rules ("did this kit actually pass?")
     are explicitly deferred per client - this just advances the counter.
@@ -349,22 +506,120 @@ def validate_kit(activities_collection, form):
         {"table_id": data["table_id"], "status": "live"}
     )
     if not activity_doc:
-        raise ValidationError(f'No live activity found on table {data["table_id"]}.')
+        raise ValidationError(
+            f'No live activity found on table {data["table_id"]}.',
+            reason=REASON_NO_LIVE_ACTIVITY,
+        )
 
-    field = _kit_index_field(data["cam_id"])
-    new_index = activity_doc.get(field, 1) + 1
+    cam_id = data["cam_id"]
+
+    if _is_camera_completed(activity_doc, cam_id):
+        raise ValidationError(
+            f'Camera {cam_id} on table {data["table_id"]} has already completed '
+            f'all {activity_doc.get("quantity_required")} kits for this activity - '
+            f"no further validation is accepted for this camera.",
+            reason=REASON_CAMERA_COMPLETED,
+        )
+
+    field = _kit_index_field(cam_id)
+    old_index = activity_doc.get(field, 1)
+    new_index = old_index + 1
+    now = _now_iso()
 
     activities_collection.update_one(
         {"_id": activity_doc["_id"]},
-        {"$set": {field: new_index, "updated_at": _now_iso()}},
+        {
+            "$set": {
+                field: new_index,
+                "updated_at": now,
+                f"{_kit_path(cam_id, old_index)}.timing.validated_at": now,
+                f"{_kit_path(cam_id, new_index)}.timing.actual_kit_start_time": now,
+            }
+        },
     )
+
+    target = activity_doc.get("quantity_required", 0)
+    is_now_completed = target > 0 and new_index > target
+
+    activity_fully_completed = False
+    if is_now_completed:
+        # Check the OTHER camera's already-stored index (not re-fetched -
+        # this camera's own update just happened above, and the other
+        # camera's field is untouched by this call, so the pre-update
+        # activity_doc's value for it is still current). If both cameras
+        # are now past target, the activity as a whole is done - client's
+        # explicit requirement: auto-move to history, freeze Total time
+        # at this exact instant (the later of the two completions).
+        other_cam_id = "cam2" if cam_id == "cam1" else "cam1"
+        other_index = activity_doc.get(_kit_index_field(other_cam_id), 1)
+        other_target = target  # quantity_required is shared across both cameras
+        other_completed = other_target > 0 and other_index > other_target
+
+        if other_completed:
+            activity_fully_completed = True
 
     return {
         "table_id": data["table_id"],
-        "cam_id": data["cam_id"],
+        "cam_id": cam_id,
         "activity_id": str(activity_doc["_id"]),
         "new_kit_index": new_index,
+        "is_completed": is_now_completed,
+        "kit_start_time": now,
+        "activity_fully_completed": activity_fully_completed,
+        "completed_at": now if activity_fully_completed else None,
     }
+
+
+def complete_activity_if_both_cameras_done(activities_collection, history_collection, activity_id, completed_at):
+    """Moves a live activity to activity_history with status "completed"
+    (client's confirmed choice - the same status value already used
+    conceptually alongside "completed-manually", just reached
+    automatically instead of via the landing page's Complete Manually
+    button). Called from cv_ingest/routes.py right after validate_kit()
+    reports activity_fully_completed=True.
+
+    Mirrors live_kitting_activities/activities_data.py's
+    complete_activity_manually() pattern exactly (copy the FULL document
+    rather than reconstructing a subset, so any field added later is
+    automatically carried into history without this function needing to
+    know about it) - duplicated here rather than imported, per this
+    project's decoupled-blueprints convention (cv_ingest never imports
+    from live_kitting_activities, and vice versa).
+
+    completed_at is passed in (the timestamp from the validate_kit call
+    that triggered this) rather than computed fresh here with _now_iso(),
+    so "Total time" freezes at the EXACT instant the second camera
+    completed, not a few milliseconds later when this follow-up call
+    happens to run.
+
+    Idempotent-safe: if the activity doc is already gone (e.g. a
+    duplicate/retried call), find_one returns None and this is a no-op -
+    never raises, since by the time this is called the camera-level
+    validate has already succeeded and been persisted; failing to also
+    complete-to-history should not surface as an error response to the
+    caller that already got a valid 200.
+    """
+    from bson import ObjectId
+
+    try:
+        object_id = ObjectId(activity_id)
+    except Exception:
+        return
+
+    doc = activities_collection.find_one({"_id": object_id})
+    if not doc:
+        return
+
+    history_doc = dict(doc)
+    history_doc["status"] = "completed"
+    history_doc["stopped_at"] = completed_at
+    history_doc["completed_at"] = completed_at
+    history_doc["stop_reason"] = None
+    history_doc["updated_at"] = completed_at
+    history_doc.pop("_id", None)
+
+    history_collection.insert_one(history_doc)
+    activities_collection.delete_one({"_id": object_id})
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +637,10 @@ def toggle_green_sound(activities_collection, table_id, cam_id):
         {"table_id": table_id, "status": "live"}
     )
     if not activity_doc:
-        raise ValidationError(f"No live activity found on table {table_id}.")
+        raise ValidationError(
+            f"No live activity found on table {table_id}.",
+            reason=REASON_NO_LIVE_ACTIVITY,
+        )
 
     field = f"green_sound_enabled_{cam_id}"
     new_value = not activity_doc.get(field, True)

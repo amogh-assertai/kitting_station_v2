@@ -16,8 +16,10 @@
   class="monitor-page"
   data-activity-id="{{ activity.id }}"
   data-table-id="{{ table_id }}"
+  data-quantity-required="{{ activity.cam1.total_required }}"
   data-green-popup-uptime-sec="{{ green_popup_uptime_sec }}"
   data-red-popup-uptime-sec="{{ red_popup_uptime_sec }}"
+  data-landing-url="{{ url_for('live_kitting_activities.index') }}"
 >
   <!-- Per-camera detection pop-up overlays: two fixed panes, NOT
        nested inside a camera-panel. Absolutely positioned (see
@@ -52,29 +54,34 @@
     </span>
 
     <div class="monitor-progress-group">
-      <div class="monitor-progress">
+      <div class="monitor-progress" data-progress="cam1">
         <div class="monitor-progress__label">
           <span>Cam 1</span>
-          <span>{{ activity.cam1.total_count }}/{{ activity.cam1.total_required }} &middot; {{ activity.cam1.percent }}%</span>
+          <span data-progress-label>{{ activity.cam1.total_count }}/{{ activity.cam1.total_required }} &middot; {{ activity.cam1.percent }}%</span>
         </div>
         <div class="monitor-progress__track">
-          <div class="monitor-progress__fill" style="width: {{ activity.cam1.percent }}%;"></div>
+          <div class="monitor-progress__fill" data-progress-fill style="width: {{ activity.cam1.percent }}%;"></div>
         </div>
       </div>
-      <div class="monitor-progress">
+      <div class="monitor-progress" data-progress="cam2">
         <div class="monitor-progress__label">
           <span>Cam 2</span>
-          <span>{{ activity.cam2.total_count }}/{{ activity.cam2.total_required }} &middot; {{ activity.cam2.percent }}%</span>
+          <span data-progress-label>{{ activity.cam2.total_count }}/{{ activity.cam2.total_required }} &middot; {{ activity.cam2.percent }}%</span>
         </div>
         <div class="monitor-progress__track">
-          <div class="monitor-progress__fill" style="width: {{ activity.cam2.percent }}%;"></div>
+          <div class="monitor-progress__fill" data-progress-fill style="width: {{ activity.cam2.percent }}%;"></div>
         </div>
       </div>
     </div>
 
     <div class="monitor-header__info-col monitor-header__total-time">
       <span class="monitor-header__info-label">Total time</span>
-      <span class="monitor-header__info-value" data-activity-timer data-created-at="{{ activity.created_at }}">--:--:--</span>
+      <span
+        class="monitor-header__info-value"
+        data-activity-timer
+        data-created-at="{{ activity.created_at }}"
+        data-completed-at=""
+      >--:--:--</span>
     </div>
 
     <div class="monitor-header__info">
@@ -96,7 +103,7 @@
 
   <div class="monitor-cameras">
     {% for cam in [activity.cam1, activity.cam2] %}
-      <div class="camera-panel" data-cam-id="{{ 'cam1' if loop.first else 'cam2' }}">
+      <div class="camera-panel" data-cam-id="{{ 'cam1' if loop.first else 'cam2' }}" {% if cam.is_completed %}data-camera-completed{% endif %}>
         <div class="camera-panel__body" data-panel-body>
         <div class="camera-panel__header">
           <div class="camera-panel__title">
@@ -104,14 +111,17 @@
             <span>{{ cam.camera_label }}</span>
             <span
               class="camera-panel__timer"
-              data-activity-timer
-              data-created-at="{{ activity.created_at }}"
-              title="Activity running time (per-kit timing not tracked yet)"
+              data-kit-timer
+              data-kit-start-time="{{ cam.kit_start_time }}"
+              title="Time on current kit - resets to 0 when this camera's kit is validated"
+              {% if cam.is_completed %}hidden{% endif %}
             >--:--:--</span>
             <button type="button" class="btn btn--secondary btn--small camera-panel__history-btn">History</button>
           </div>
           <div class="camera-panel__kit-index-group">
-            <span class="camera-panel__kit-index" data-kit-index-label>Kit #{{ cam.current_kit_index }}</span>
+            <span class="camera-panel__kit-index" data-kit-index-label>
+              {% if cam.is_completed %}Kits Completed{% else %}Kit #{{ cam.current_kit_index }}{% endif %}
+            </span>
             <!-- Green sound toggle - per-camera, per-activity (client's
                  explicit call: does NOT touch the table's saved default
                  in Table Settings, only this activity's own record).
@@ -131,37 +141,62 @@
           </div>
         </div>
 
-        <div class="camera-panel__section camera-panel__section--completed">
-          Completed (<span data-completed-count>{{ cam.completed_parts | length }}</span>)
-        </div>
-        <div class="camera-panel__cards" data-completed-cards>
-          {% for part in cam.completed_parts %}
-            <div class="part-card part-card--completed" data-part-name="{{ part.part_name }}">
-              <span class="part-card__name">{{ part.part_name }}</span>
-              <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
-              {% if part.last_detected %}
-                <span class="part-card__badge">Last detected</span>
-              {% endif %}
-            </div>
-          {% endfor %}
-        </div>
+        {% if cam.is_completed %}
+          <!-- All kits done for this camera (client's confirmed
+               semantics: current_kit_index went one past
+               quantity_required). Completed/Pending sections, cards -
+               all suppressed; just this state message. Independent per
+               camera - the OTHER camera keeps its normal cards if it
+               hasn't finished yet. -->
+          <div class="camera-panel__done-state" data-camera-done-state>
+            <span class="camera-panel__done-icon" aria-hidden="true">&#10003;</span>
+            <span class="camera-panel__done-text">Kits Completed</span>
+          </div>
+        {% else %}
+          <div class="camera-panel__section camera-panel__section--completed" data-completed-section>
+            Completed (<span data-completed-count>{{ cam.completed_parts | length }}</span>)
+          </div>
+          <div class="camera-panel__cards" data-completed-cards>
+            {% for part in cam.completed_parts %}
+              <div class="part-card part-card--completed" data-part-name="{{ part.part_name }}">
+                <span class="part-card__name">{{ part.part_name }}</span>
+                <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+                {% if part.last_detected %}
+                  <span class="part-card__badge">Last detected</span>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
 
-        <div class="camera-panel__section camera-panel__section--pending">
-          Pending (<span data-pending-count>{{ cam.pending_parts | length }}</span>)
-        </div>
-        <div class="camera-panel__cards" data-pending-cards>
-          {% for part in cam.pending_parts %}
-            <div class="part-card part-card--pending" data-part-name="{{ part.part_name }}" data-required="{{ part.quantity_required }}">
-              <span class="part-card__name">{{ part.part_name }}</span>
-              <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
-              <span class="part-card__warning" aria-hidden="true">&#9888;</span>
-            </div>
-          {% endfor %}
-        </div>
-        <span class="camera-panel__kit-index-hidden" data-kit-index-value hidden>{{ cam.current_kit_index }}</span>
+          <div class="camera-panel__section camera-panel__section--pending" data-pending-section>
+            Pending (<span data-pending-count>{{ cam.pending_parts | length }}</span>)
+          </div>
+          <div class="camera-panel__cards" data-pending-cards>
+            {% for part in cam.pending_parts %}
+              <div class="part-card part-card--pending" data-part-name="{{ part.part_name }}" data-required="{{ part.quantity_required }}">
+                <span class="part-card__name">{{ part.part_name }}</span>
+                <span class="part-card__qty" data-part-qty>Qty: {{ part.count }} / {{ part.quantity_required }}</span>
+                <span class="part-card__warning" aria-hidden="true">&#9888;</span>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
         </div>
       </div>
     {% endfor %}
+  </div>
+
+  <!-- Activity-complete overlay: both cameras finished, activity moved
+       to history (status "completed"). Shown briefly on
+       "activity:completed" before monitor.js redirects to the landing
+       page - client's explicit call: a short confirmation, then
+       auto-redirect, not a silent redirect and not a permanent stay-put
+       summary. Hidden by default; covers the whole page (reuses the
+       same [hidden] override pattern as .detection-popup). -->
+  <div class="activity-complete-overlay" data-activity-complete-overlay hidden>
+    <span class="activity-complete-overlay__icon" aria-hidden="true">&#10003;</span>
+    <span class="activity-complete-overlay__text">Activity Completed</span>
+    <span class="activity-complete-overlay__subtext">Returning to Live Kitting Activities&hellip;</span>
   </div>
 </div>
 {% endblock %}

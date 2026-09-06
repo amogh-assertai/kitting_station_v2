@@ -19,6 +19,12 @@ def _activities_collection():
     return db[name]
 
 
+def _activity_history_collection():
+    db = current_app.config["MONGO_DB"]
+    name = current_app.config["SETTINGS"]["mongodb"]["collections"]["activity_history"]
+    return db[name]
+
+
 def _live_kitting_settings():
     return current_app.config["SETTINGS"]["live_kitting"]
 
@@ -76,9 +82,9 @@ def detection_update():
             allowed_extensions=settings["allowed_image_extensions"],
         )
     except detection_data.ValidationError as exc:
-        return jsonify(success=False, error=str(exc)), 400
+        return jsonify(success=False, reason="validation_error", message=str(exc)), 400
     except (TypeError, ValueError):
-        return jsonify(success=False, error="tableid is required and must be an integer."), 400
+        return jsonify(success=False, reason="validation_error", message="tableid is required and must be an integer."), 400
 
     try:
         result = detection_data.record_detection(
@@ -87,9 +93,17 @@ def detection_update():
             image_path,
         )
     except detection_data.ValidationError as exc:
-        return jsonify(success=False, error=str(exc)), 400
+        # reason now comes directly from the exception (set at the raise
+        # site in detection_data.py) rather than sniffed out of the
+        # message string - distinguishes "no live activity on this
+        # table" from "this camera already finished all its kits" from
+        # any other validation failure, so the DeepStream client (or any
+        # other caller) gets an actionable reason code, not just a
+        # generic error string - client's explicit ask: "API also should
+        # get appropriate feedback message, not just error."
+        return jsonify(success=False, reason=exc.reason, message=str(exc)), 400
     except PyMongoError:
-        return jsonify(success=False, error="Could not connect to the database."), 500
+        return jsonify(success=False, reason="database_error", message="Could not connect to the database."), 500
 
     image_url = None
     if result["image_path"]:
@@ -133,7 +147,7 @@ def detection_update():
             room=room,
         )
 
-    return jsonify(success=True, matched=result["matched"], count=result["count"])
+    return jsonify(success=True, matched=result["matched"], count=result["count"], message="Detection recorded.")
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +179,16 @@ def validate_kit():
             allowed_extensions=settings["allowed_image_extensions"],
         )
     except detection_data.ValidationError as exc:
-        return jsonify(success=False, error=str(exc)), 400
+        return jsonify(success=False, reason="validation_error", message=str(exc)), 400
     except (TypeError, ValueError):
-        return jsonify(success=False, error="tableid is required and must be an integer."), 400
+        return jsonify(success=False, reason="validation_error", message="tableid is required and must be an integer."), 400
 
     try:
         result = detection_data.validate_kit(_activities_collection(), form)
     except detection_data.ValidationError as exc:
-        return jsonify(success=False, error=str(exc)), 400
+        return jsonify(success=False, reason=exc.reason, message=str(exc)), 400
     except PyMongoError:
-        return jsonify(success=False, error="Could not connect to the database."), 500
+        return jsonify(success=False, reason="database_error", message="Could not connect to the database."), 500
 
     room = _room_for_activity(result["activity_id"])
     socketio.emit(
@@ -182,11 +196,45 @@ def validate_kit():
         {
             "cam_id": result["cam_id"],
             "new_kit_index": result["new_kit_index"],
+            "is_completed": result["is_completed"],
+            "kit_start_time": result["kit_start_time"],
         },
         room=room,
     )
 
-    return jsonify(success=True, new_kit_index=result["new_kit_index"])
+    # If BOTH cameras are now completed, move the whole activity to
+    # history (status "completed") and tell every viewer currently on
+    # this monitor page - client's explicit requirements: freeze "Total
+    # time" at the instant the SECOND camera finishes, and auto-complete
+    # to history rather than requiring the manual "Complete Manually"
+    # button. completed_at is the same timestamp validate_kit() just
+    # used for this call, so Total time freezes at exactly this instant,
+    # not a few milliseconds later when the history-move happens.
+    if result["activity_fully_completed"]:
+        detection_data.complete_activity_if_both_cameras_done(
+            _activities_collection(),
+            _activity_history_collection(),
+            result["activity_id"],
+            result["completed_at"],
+        )
+        socketio.emit(
+            "activity:completed",
+            {"completed_at": result["completed_at"]},
+            room=room,
+        )
+
+    message = (
+        f'All kits completed for camera {result["cam_id"]}.'
+        if result["is_completed"]
+        else f'Advanced to kit #{result["new_kit_index"]}.'
+    )
+    return jsonify(
+        success=True,
+        new_kit_index=result["new_kit_index"],
+        is_completed=result["is_completed"],
+        activity_fully_completed=result["activity_fully_completed"],
+        message=message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -205,19 +253,19 @@ def toggle_sound():
     try:
         table_id = int(body.get("table_id"))
     except (TypeError, ValueError):
-        return jsonify(success=False, error="table_id is required and must be an integer."), 400
+        return jsonify(success=False, reason="validation_error", message="table_id is required and must be an integer."), 400
 
     try:
         cam_id = detection_data.normalize_cam_id(body.get("camid"))
     except detection_data.ValidationError as exc:
-        return jsonify(success=False, error=str(exc)), 400
+        return jsonify(success=False, reason="validation_error", message=str(exc)), 400
 
     try:
         result = detection_data.toggle_green_sound(_activities_collection(), table_id, cam_id)
     except detection_data.ValidationError as exc:
-        return jsonify(success=False, error=str(exc)), 400
+        return jsonify(success=False, reason=exc.reason, message=str(exc)), 400
     except PyMongoError:
-        return jsonify(success=False, error="Could not connect to the database."), 500
+        return jsonify(success=False, reason="database_error", message="Could not connect to the database."), 500
 
     room = _room_for_activity(result["activity_id"])
     socketio.emit(

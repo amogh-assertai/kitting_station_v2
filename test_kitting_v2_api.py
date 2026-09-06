@@ -45,6 +45,7 @@ except ImportError:
 
 DEFAULT_BASE_URL = "http://localhost:7000"
 
+#DEFAULT_BASE_URL = "http://3.101.116.148:7000"
 
 def build_placeholder_image():
     """Generates a small solid-color JPG in memory - no external asset

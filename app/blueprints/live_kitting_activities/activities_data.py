@@ -279,6 +279,21 @@ def create_live_activity(
         "current_kit_index_cam2": 1,
         "green_sound_enabled_cam1": green_sound_defaults["cam1"],
         "green_sound_enabled_cam2": green_sound_defaults["cam2"],
+        # Kit-level timing lives NESTED inside detections.cam{N}.<kit>
+        # .timing (restructured this session, per client's request - see
+        # cv_ingest/detection_data.py's module docstring for the full
+        # shape). Kit 1's start time is the activity's own creation
+        # moment, since kit 1 is "current" from the instant the activity
+        # begins - there's no "kit 0" to validate out of to produce this
+        # the normal way (see cv_ingest/detection_data.validate_kit for
+        # kit 2+'s start times, which come from the PREVIOUS kit's
+        # validated_at). "validation" is left absent (not even an empty
+        # dict) until a later build actually populates it - reserved,
+        # not yet used.
+        "detections": {
+            "cam1": {"1": {"timing": {"actual_kit_start_time": now, "first_part_detected_time": None, "validated_at": None}, "events": []}},
+            "cam2": {"1": {"timing": {"actual_kit_start_time": now, "first_part_detected_time": None, "validated_at": None}, "events": []}},
+        },
         "status": STATUS_LIVE,
         "created_at": now,
         "updated_at": now,
@@ -374,12 +389,25 @@ def build_monitor_view(doc):
 
     A part is "completed" once its count reaches quantity_required.
 
+    COMPLETION (added this session): current_kit_index_cam{N} can exceed
+    quantity_required by exactly one step once validate_kit is called on
+    the last real kit - e.g. quantity_required=5, kit index 5 is a
+    normal working kit, and validating it advances to 6. Index 6 has no
+    real kit data of its own; it's purely the sentinel meaning "this
+    camera is done." When that's the case, completed_parts/pending_parts
+    are both returned empty and is_completed=True is set instead - the
+    template renders a "Kits Completed" state rather than any cards.
+    Independent per camera - cam1 completing has no bearing on cam2.
+
     The progress bar/percent is NOT derived from part quantities - it
     tracks kits packed so far (current_kit_index_cam{1,2}) against the
     activity's overall target (quantity_required, e.g. 50 units to
-    pack), confirmed scope. Per-part Qty X/Y on each card is a separate,
-    unrelated number (how many of that specific part have been detected
-    for the CURRENT kit, out of how many that kit needs)."""
+    pack), confirmed scope, CAPPED at 100% once a camera completes
+    (kit_index can be one past target - e.g. 6 with target 5 - and
+    without capping this would show a nonsensical 120%). Per-part Qty
+    X/Y on each card is a separate, unrelated number (how many of that
+    specific part have been detected for the CURRENT kit, out of how
+    many that kit needs)."""
 
     target = doc.get("quantity_required", 0)
 
@@ -410,17 +438,51 @@ def build_monitor_view(doc):
             })
         return parts
 
+    def _kit_start_time(camera, kit_index):
+        """The CURRENT kit's start time, for the monitor page's per-kit
+        timer (resets to 0 on every validate_kit for that camera - see
+        FRD). Reads from detections.<camera>.<kit_index>.timing
+        (restructured this session - was a separate kit_timings_cam{N}
+        tree, now nested inside the per-kit detections record, per
+        client's request). Falls back to the activity's own created_at
+        if this kit index somehow has no timing entry yet (defensive
+        only - kit 1 always gets one at creation, and every later kit
+        gets one from validate_kit - this should not normally happen)."""
+        return (
+            doc.get("detections", {})
+            .get(camera, {})
+            .get(str(kit_index), {})
+            .get("timing", {})
+            .get("actual_kit_start_time")
+            or doc.get("created_at")
+        )
+
     def _camera_summary(camera, kit_index):
-        parts = _parts_for_camera(camera, kit_index)
-        completed = [p for p in parts if p["completed"]]
-        pending = [p for p in parts if not p["completed"]]
-        percent = round((kit_index / target) * 100, 2) if target else 0.0
+        is_completed = target > 0 and kit_index > target
+
+        if is_completed:
+            # No real kit data exists at an index past target - return
+            # empty lists rather than attempting to look up parts for a
+            # kit index that was never actually worked.
+            completed, pending = [], []
+        else:
+            parts = _parts_for_camera(camera, kit_index)
+            completed = [p for p in parts if p["completed"]]
+            pending = [p for p in parts if not p["completed"]]
+
+        # Capped at 100% - kit_index can be ONE past target once
+        # completed (e.g. 6 with target 5), which would otherwise show
+        # a nonsensical >100% on the progress bar.
+        effective_index = min(kit_index, target) if target else kit_index
+        percent = round((effective_index / target) * 100, 2) if target else 0.0
+
         return {
             "camera_label": "CAM1" if camera == "cam1" else "CAM2",
             "current_kit_index": kit_index,
+            "is_completed": is_completed,
             "completed_parts": completed,
             "pending_parts": pending,
-            "total_count": kit_index,
+            "total_count": effective_index,
             "total_required": target,
             "percent": percent,
             # Green sound toggle state - per-camera, per-activity (see
@@ -428,6 +490,10 @@ def build_monitor_view(doc):
             # has no toggle; it always reads the table_settings snapshot's
             # default_enabled directly at playback time.
             "green_sound_enabled": doc.get(f"green_sound_enabled_{camera}", True),
+            # Kit-level timing (added this session) - the CURRENT kit's
+            # start time, for the monitor page's per-kit timer (resets
+            # to 0 whenever validate_kit advances this camera).
+            "kit_start_time": _kit_start_time(camera, kit_index),
         }
 
     return {

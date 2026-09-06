@@ -1,16 +1,23 @@
 /**
  * Live Kitting Activity - Monitor page behavior.
  *
- * Two independent concerns in this file:
+ * Concerns in this file:
  *
- * 1. Elapsed-time timers (unchanged from the original UI-only build) -
- *    "Total time" (header) and each camera panel's timer show the
- *    activity's running time, computed client-side against created_at.
+ * 1. "Total time" header timer (unchanged) - activity-wide elapsed
+ *    time, computed client-side against created_at, never resets.
+ *
+ * 1b. Per-camera "Kit timer" (added this session) - each camera panel
+ *     shows how long its CURRENT kit has been in progress, computed
+ *     against that kit's actual_kit_start_time (see
+ *     cv_ingest/detection_data.py's kit_timings_cam{1,2}). Resets to 0
+ *     live, independently per camera, whenever that camera's
+ *     "kit:advanced" socket event arrives - client's explicit
+ *     requirement: "near cam1 and cam2, show actual kit time, that
+ *     timer resets and starts from 0" on validation.
  *
  * 2. Socket.IO live detection sync - every browser tab viewing this
  *    activity's monitor page joins a server-side room keyed by activity
- *    id, and reacts to three events pushed from cv_ingest/routes.py
- *    when the DeepStream application posts a detection:
+ *    id, and reacts to events pushed from cv_ingest/routes.py:
  *      - "detection:green"  -> expected part detected: shows a full-box
  *        pop-up (image + part/qty/time) inside that camera's panel,
  *        replacing the completed/pending list for the configured
@@ -22,11 +29,17 @@
  *        later build - this is only the visual pop-up.
  *      - "kit:advanced"     -> that camera's kit index moved forward;
  *        clear all live counts back to 0/required for that camera only
- *        (cam1/cam2 advance independently).
+ *        (cam1/cam2 advance independently), reset its Kit timer to 0,
+ *        and if is_completed is true, replace the completed/pending
+ *        view with a "Kits Completed" state for that camera only.
  *      - "sound:toggled"    -> a viewer flipped one camera's green-sound
  *        toggle; every viewer's icon updates to match, so the toggle
  *        state stays in sync across all open monitor pages for this
  *        activity.
+ *      - "activity:completed" -> BOTH cameras have finished all their
+ *        kits; the server has already moved the activity to history.
+ *        Freezes "Total time," shows a brief confirmation overlay, then
+ *        auto-redirects to the landing page.
  *
  * 3. Detection sound playback - on "detection:green"/"detection:red",
  *    if the server decided a sound should play (see
@@ -44,7 +57,7 @@
  */
 
 // ---------------------------------------------------------------------
-// 1. Elapsed-time timers (unchanged)
+// 1. Elapsed-time timers - "Total time" (activity-wide, never resets)
 // ---------------------------------------------------------------------
 
 function formatElapsed(totalSeconds) {
@@ -76,8 +89,70 @@ function initTimers() {
   const valid = timers.filter((t) => !isNaN(t.startTime));
   if (valid.length === 0) return;
 
+  // "Total time" freezes once BOTH cameras complete (client's explicit
+  // requirement) - each tick checks the element's own data-completed-at
+  // (populated live by freezeActivityTimer() on "activity:completed",
+  // see below) rather than a module-level flag, so this same tick loop
+  // works whether or not completion ever happens during this page view.
   function tick() {
     valid.forEach(({ el, startTime }) => {
+      const completedAtRaw = el.dataset.completedAt;
+      const endTime = completedAtRaw ? new Date(completedAtRaw).getTime() : Date.now();
+      const elapsedSeconds = (endTime - startTime) / 1000;
+      el.textContent = formatElapsed(Math.max(elapsedSeconds, 0));
+    });
+  }
+
+  tick();
+  setInterval(tick, 1000);
+}
+
+/**
+ * Freezes the "Total time" header timer at completedAtIso - called from
+ * handleActivityCompleted() on the "activity:completed" socket event
+ * (both cameras just finished). Writing completedAtIso into the
+ * element's own data-completed-at means the shared tick() loop in
+ * initTimers() picks it up on its very next tick without needing a
+ * separate interval or a module-level "is this activity done" flag.
+ */
+function freezeActivityTimer(completedAtIso) {
+  document.querySelectorAll("[data-activity-timer]").forEach((el) => {
+    el.dataset.completedAt = completedAtIso;
+  });
+}
+
+// ---------------------------------------------------------------------
+// 1b. Per-camera "Kit timer" - resets live on kit:advanced
+// ---------------------------------------------------------------------
+
+/**
+ * Unlike the activity-wide "Total time" timer (a fixed set computed
+ * once at page load), each Kit timer's start time can change during the
+ * page's lifetime (every validate_kit resets it) - so this keeps a
+ * mutable registry keyed by element, and a single shared interval reads
+ * from it every tick. resetKitTimer() (called from handleKitAdvanced)
+ * updates the registry; the interval always reflects the latest value.
+ */
+const _kitTimerRegistry = new Map(); // element -> startTime (ms epoch)
+
+function initKitTimers() {
+  document.querySelectorAll("[data-kit-timer]").forEach((el) => {
+    const startTime = new Date(el.dataset.kitStartTime).getTime();
+    if (isNaN(startTime)) {
+      console.warn(
+        "Kit timer: missing or invalid kit start time, cannot compute elapsed time.",
+        { kitStartTime: el.dataset.kitStartTime }
+      );
+      el.textContent = "--:--:--";
+      return;
+    }
+    _kitTimerRegistry.set(el, startTime);
+  });
+
+  if (_kitTimerRegistry.size === 0) return;
+
+  function tick() {
+    _kitTimerRegistry.forEach((startTime, el) => {
       const elapsedSeconds = (Date.now() - startTime) / 1000;
       el.textContent = formatElapsed(Math.max(elapsedSeconds, 0));
     });
@@ -85,6 +160,24 @@ function initTimers() {
 
   tick();
   setInterval(tick, 1000);
+}
+
+/**
+ * Resets one camera's Kit timer to a new start time (called from
+ * handleKitAdvanced on "kit:advanced" - client's explicit requirement:
+ * the timer should reset to 0 and start counting again the moment that
+ * camera's kit is validated). Uses the server-provided kit_start_time
+ * from the socket payload rather than Date.now() on the client, so
+ * every viewer's timer is anchored to the same authoritative instant
+ * regardless of small clock differences between devices.
+ */
+function resetKitTimer(panel, kitStartTimeIso) {
+  const el = panel.querySelector("[data-kit-timer]");
+  if (!el) return;
+  const startTime = new Date(kitStartTimeIso).getTime();
+  if (isNaN(startTime)) return;
+  el.dataset.kitStartTime = kitStartTimeIso;
+  _kitTimerRegistry.set(el, startTime);
 }
 
 // ---------------------------------------------------------------------
@@ -233,11 +326,96 @@ function playDetectionSound(audioUrl) {
  * label. The OTHER camera is untouched (cam1/cam2 advance
  * independently, confirmed scope).
  */
+/**
+ * Handles a "kit:advanced" event: this camera's kit index moved
+ * forward. Clears all of that camera's part cards back to a pending,
+ * zero-count state (the previous kit's detections remain in the
+ * database as history - see cv_ingest/detection_data.py - this is only
+ * a UI reset, not a data deletion), clears any last-detected badge
+ * (a new kit has no detections yet), updates the visible "Kit #N"
+ * label, and resets that camera's Kit timer to 0 (client's explicit
+ * requirement - see resetKitTimer()). The OTHER camera is untouched
+ * (cam1/cam2 advance independently, confirmed scope).
+ *
+ * If payload.is_completed is true, this camera has just validated past
+ * its last real kit (current_kit_index now exceeds quantity_required) -
+ * the entire Completed/Pending section is replaced with a "Kits
+ * Completed" state instead of being reset to a fresh pending list,
+ * since there IS no next kit's parts to show. Independent per camera -
+ * the other camera's own cards are untouched regardless of this one's
+ * completion.
+ */
+/**
+ * Updates the top-of-page progress bar for one camera (the "Cam 1 —
+ * X/Y · Z%" row next to the status pill). This is server-rendered on
+ * page load but was NOT previously updated live - after a socket-driven
+ * kit advance, it stayed stale until the page was refreshed. Called
+ * from handleKitAdvanced on every advance (completed or not), using the
+ * same capping logic as the server's build_monitor_view(): kit_index
+ * can be ONE past quantity_required once completed, but the displayed
+ * count/percent never exceeds the target.
+ */
+function updateTopProgressBar(camId, newKitIndex) {
+  const monitorPage = document.querySelector('.monitor-page');
+  const target = parseInt((monitorPage && monitorPage.dataset.quantityRequired) || '0', 10);
+  if (!target) return;
+
+  const progressEl = document.querySelector(`[data-progress="${camId}"]`);
+  if (!progressEl) return;
+
+  const effectiveIndex = Math.min(newKitIndex, target);
+  const percent = Math.round((effectiveIndex / target) * 10000) / 100; // 2 decimal places, matches server's round(x, 2)
+
+  const labelEl = progressEl.querySelector('[data-progress-label]');
+  const fillEl = progressEl.querySelector('[data-progress-fill]');
+  if (labelEl) labelEl.textContent = `${effectiveIndex}/${target} \u00b7 ${percent}%`;
+  if (fillEl) fillEl.style.width = `${percent}%`;
+}
+
 function handleKitAdvanced(payload) {
   const panel = findCameraPanel(payload.cam_id);
   if (!panel) return;
 
+  resetKitTimer(panel, payload.kit_start_time);
+  updateTopProgressBar(payload.cam_id, payload.new_kit_index);
+
   const kitLabel = panel.querySelector('[data-kit-index-label]');
+
+  if (payload.is_completed) {
+    if (kitLabel) kitLabel.textContent = 'Kits Completed';
+    panel.setAttribute('data-camera-completed', '');
+
+    // Client's explicit requirement: don't show a camera-wise kit timer
+    // once that camera's kits are completed - there's no "current kit"
+    // left for it to measure. Removed from the tick registry (not just
+    // hidden) so it stops being recomputed every second for no reason.
+    const timerEl = panel.querySelector('[data-kit-timer]');
+    if (timerEl) {
+      timerEl.hidden = true;
+      _kitTimerRegistry.delete(timerEl);
+    }
+
+    const completedSection = panel.querySelector('[data-completed-section]');
+    const pendingSection = panel.querySelector('[data-pending-section]');
+    const completedCards = panel.querySelector('[data-completed-cards]');
+    const pendingCards = panel.querySelector('[data-pending-cards]');
+    [completedSection, pendingSection, completedCards, pendingCards].forEach((el) => {
+      if (el) el.remove();
+    });
+
+    if (!panel.querySelector('[data-camera-done-state]')) {
+      const doneState = document.createElement('div');
+      doneState.className = 'camera-panel__done-state';
+      doneState.setAttribute('data-camera-done-state', '');
+      doneState.innerHTML = `
+        <span class="camera-panel__done-icon" aria-hidden="true">&#10003;</span>
+        <span class="camera-panel__done-text">Kits Completed</span>
+      `;
+      panel.querySelector('[data-panel-body]').appendChild(doneState);
+    }
+    return;
+  }
+
   if (kitLabel) kitLabel.textContent = `Kit #${payload.new_kit_index}`;
 
   clearLastDetectedBadges(panel);
@@ -288,6 +466,34 @@ function handleSoundToggled(payload) {
 
   const icon = btn.querySelector('[data-sound-toggle-icon]');
   if (icon) icon.textContent = isOn ? '\u{1F50A}' : '\u{1F507}';
+}
+
+/**
+ * Handles "activity:completed": BOTH cameras have finished all their
+ * kits, and the server has already moved the activity from
+ * live_activity_details to activity_history with status "completed"
+ * (see cv_ingest/detection_data.complete_activity_if_both_cameras_done).
+ * Client's explicit requirements, all handled here:
+ *   1. Freeze "Total time" at the instant of completion (not still
+ *      ticking) - delegates to freezeActivityTimer().
+ *   2. Show a brief confirmation overlay, then auto-redirect to the
+ *      Live Kitting Activities landing page - the activity document
+ *      this page was watching no longer exists in the live collection,
+ *      so staying on this URL after the redirect delay would otherwise
+ *      dead-end on a now-nonexistent activity.
+ */
+function handleActivityCompleted(payload) {
+  freezeActivityTimer(payload.completed_at);
+
+  const overlay = document.querySelector('[data-activity-complete-overlay]');
+  if (overlay) overlay.hidden = false;
+
+  const monitorPage = document.querySelector('.monitor-page');
+  const landingUrl = (monitorPage && monitorPage.dataset.landingUrl) || '/';
+
+  window.setTimeout(() => {
+    window.location.href = landingUrl;
+  }, 2500);
 }
 
 /**
@@ -429,10 +635,12 @@ function initSocket() {
   socket.on('detection:red', handleRedDetection);
   socket.on('kit:advanced', handleKitAdvanced);
   socket.on('sound:toggled', handleSoundToggled);
+  socket.on('activity:completed', handleActivityCompleted);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   initTimers();
+  initKitTimers();
   initSocket();
   initSoundToggles();
 });
