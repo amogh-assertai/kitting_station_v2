@@ -772,7 +772,7 @@ def _find_validation_issues(activity_doc, cam_id, kit_index):
 # validate_kit - the /api/validate-kit handler's core logic
 # ---------------------------------------------------------------------------
 
-def validate_kit(activities_collection, form):
+def validate_kit(activities_collection, form, image_path=None):
     """Advances ONE camera's current_kit_index forward by 1 (cam1/cam2
     advance independently, confirmed). Does NOT touch part_counts,
     last_detected, or the OLD kit's events at all - that data stays
@@ -799,12 +799,16 @@ def validate_kit(activities_collection, form):
     detections.<cam>.<kit_index>.timing (restructured this session -
     see module docstring) rather than a separate kit_timings_cam{N} tree.
 
-    A "validation" image (optional, per the API contract) is currently
-    only saved to disk and otherwise discarded - see routes.py. This
-    function reserves detections.<cam>.<kit_index>.validation as WHERE
-    that detail should be written once a later build actually stores it
-    (image path, pass/fail detail, etc.) - not populated yet, so this
-    key does not appear in the document until that build happens.
+    image_path (NEW this session) - the validation image, if one was
+    sent with this validate_now call, ALREADY saved to disk by
+    routes.py's save_detection_image() before this function is called.
+    Threaded through purely so the caller (routes.py) can build the
+    NEW kit-completion confirmation pop-up's image URL - this function
+    does not otherwise use or store it under
+    detections.<cam>.<kit_index>.validation (that key remains RESERVED
+    and unpopulated - a separate, still-deferred concern; the
+    confirmation pop-up is a display-only convenience, not the
+    validation-detail feature that reserved key is for).
 
     NEW this session - validation_error check runs BEFORE advancing:
     _find_validation_issues() collects every qualifying missing/
@@ -869,10 +873,16 @@ def validate_kit(activities_collection, form):
             "error_type": ERROR_TYPE_VALIDATION,
             "kit_index": old_index,
             "issues": issues,
-            "image_path": None,  # validate_kit's own image, if sent, is
-            # saved to disk by routes.py but not otherwise attached here
-            # (same "discarded beyond disk" convention already in place
-            # for validate_kit's image before this session).
+            # NEW - the validation image sent with THIS validate_now
+            # call (already saved to disk by routes.py before
+            # validate_kit() is invoked, threaded through via the
+            # image_path parameter - see this function's own docstring)
+            # is now attached to the red-screen, same as the
+            # kit:validated confirmation pop-up uses it. Persisted here
+            # so a late-joining viewer's red-screen (rendered from
+            # current_kit_errors_cam{N} on page load) shows the same
+            # image, not just a live socket event.
+            "image_path": image_path,
             "detected_at": now,
         }
         activities_collection.update_one(
@@ -895,10 +905,12 @@ def validate_kit(activities_collection, form):
             # though no advance happened - new_kit_index equals the
             # OLD index here, since nothing moved.
             "new_kit_index": old_index,
+            "old_kit_index": old_index,
             "is_completed": False,
             "kit_start_time": None,
             "activity_fully_completed": False,
             "completed_at": None,
+            "image_path": image_path,
         }
 
     new_index = old_index + 1
@@ -942,10 +954,12 @@ def validate_kit(activities_collection, form):
         "validation_error": False,
         "error": None,
         "new_kit_index": new_index,
+        "old_kit_index": old_index,
         "is_completed": is_now_completed,
         "kit_start_time": now,
         "activity_fully_completed": activity_fully_completed,
         "completed_at": now if activity_fully_completed else None,
+        "image_path": image_path,
     }
 
 

@@ -1033,6 +1033,97 @@ function formatPopupTime(isoString) {
  * simply restarts the timer on the same element instead of stacking
  * popups).
  */
+/**
+ * Handles "kit:validated" (NEW this session) - fires on EVERY clean
+ * kit advance (no validation_error), showing a brief confirmation
+ * pop-up before the panel reverts to its normal state (client's
+ * report: "on validation, nothing shows... show kit 1 completed, next
+ * kit 2"). Reuses the SAME .detection-popup element/positioning as the
+ * green/red pop-ups, with its OWN two variants:
+ *   - Normal advance: GREEN, "Kit <old> completed | Next: Kit <new>",
+ *     with the validation image if one was sent.
+ *   - Final advance (is_completed true): BLUE (client's explicit
+ *     third color, distinct from green/red/blocking-red) - image area
+ *     replaced with solid blue + centered "All kits in Cam<N>
+ *     completed" text, no "next kit" line.
+ * "kit:advanced" (unchanged, still emitted alongside this by routes.py)
+ * has already reset the panel underneath by the time this pop-up
+ * hides - same layering as the existing green/red pop-up, which also
+ * covers a panel that has already been updated live underneath it.
+ */
+function handleKitValidated(payload) {
+  const panel = findCameraPanel(payload.cam_id);
+  if (!panel) return;
+
+  const popupEl = document.querySelector(`.detection-popup[data-cam="${payload.cam_id}"]`);
+  const bodyEl = panel.querySelector('[data-panel-body]');
+  if (!popupEl || !bodyEl) return;
+
+  if (popupEl._hideTimer) {
+    window.clearTimeout(popupEl._hideTimer);
+  }
+
+  popupEl.classList.remove('detection-popup--green', 'detection-popup--red', 'detection-popup--blocking', 'detection-popup--blue');
+
+  const imageEl = popupEl.querySelector('[data-popup-image]');
+  const imageAreaEl = popupEl.querySelector('[data-popup-image-area]');
+  const partEl = popupEl.querySelector('[data-popup-part]');
+  const timeEl = popupEl.querySelector('[data-popup-time]');
+
+  if (payload.is_completed) {
+    popupEl.classList.add('detection-popup--blue');
+    // Image area is replaced with solid blue + centered text (client's
+    // exact wording: "in image section show full blue color with text
+    // in middle saying all kits in cam1/2 completed") - the validation
+    // image, if any was sent, is NOT shown for this variant, since the
+    // client's spec for this state is the solid-color + text treatment
+    // specifically, not a photo.
+    imageAreaEl.hidden = false;
+    imageEl.hidden = true;
+    let overlayText = imageAreaEl.querySelector('[data-popup-blue-text]');
+    if (!overlayText) {
+      overlayText = document.createElement('span');
+      overlayText.setAttribute('data-popup-blue-text', '');
+      overlayText.className = 'detection-popup__blue-text';
+      imageAreaEl.appendChild(overlayText);
+    }
+    overlayText.hidden = false;
+    const camLabel = payload.cam_id === 'cam1' ? 'Cam1' : 'Cam2';
+    overlayText.textContent = `All kits in ${camLabel} completed`;
+    partEl.textContent = '';
+    timeEl.textContent = '';
+  } else {
+    const overlayText = imageAreaEl.querySelector('[data-popup-blue-text]');
+    if (overlayText) overlayText.hidden = true;
+    imageEl.hidden = false;
+
+    if (payload.image_url) {
+      imageEl.src = payload.image_url;
+      imageEl.alt = '';
+      imageAreaEl.hidden = false;
+    } else {
+      imageAreaEl.hidden = true;
+    }
+    partEl.textContent = `Kit ${payload.old_kit_index} completed | Next: Kit ${payload.new_kit_index}`;
+    timeEl.textContent = '';
+  }
+
+  const monitorPage = document.querySelector('.monitor-page');
+  const defaultUptimeSec = parseFloat((monitorPage && monitorPage.dataset.validatePopupUptimeSec) || '3');
+  const displaySeconds = payload.popup_uptime_sec || defaultUptimeSec;
+
+  popupEl.hidden = false;
+  bodyEl.hidden = true;
+
+  popupEl._hideTimer = window.setTimeout(() => {
+    popupEl.hidden = true;
+    bodyEl.hidden = false;
+    popupEl._hideTimer = null;
+  }, displaySeconds * 1000);
+
+  playDetectionSound(payload.audio_url);
+}
+
 function showPopup(camId, panel, { variant, partName, count, required, imageUrl, detectedAt, uptimeSec }) {
   const popupEl = document.querySelector(`.detection-popup[data-cam="${camId}"]`);
   const bodyEl = panel.querySelector('[data-panel-body]');
@@ -1099,6 +1190,7 @@ function initSocket() {
 
   socket.on('detection:green', handleGreenDetection);
   socket.on('detection:red', handleRedDetection);
+  socket.on('kit:validated', handleKitValidated);
   socket.on('kit:advanced', handleKitAdvanced);
   socket.on('sound:toggled', handleSoundToggled);
   socket.on('activity:completed', handleActivityCompleted);

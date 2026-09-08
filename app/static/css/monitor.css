@@ -268,6 +268,40 @@
   color: #ffffff;
 }
 
+/* NEW this session - kit-completion confirmation pop-up, "all kits
+   completed" variant (client's explicit third color, distinct from
+   green/red/blocking-red - see monitor.js's handleKitValidated). Whole
+   pop-up is blue-tinted like green/red are, and the image area (which
+   for THIS variant never actually shows a photo - see
+   .detection-popup__blue-text below) gets the same darker-shade
+   treatment as green/red's image areas for visual consistency. */
+.detection-popup--blue {
+  background-color: #1d4ed8;
+}
+
+.detection-popup--blue .detection-popup__image-area {
+  background-color: #1e3a8a;
+}
+
+.detection-popup--blue .detection-popup__meta {
+  background-color: #2563eb;
+  color: #ffffff;
+}
+
+/* Centered text overlay filling the image area for the "all kits
+   completed" variant (client: "in image section show full blue color
+   with text in middle saying all kits in cam1/2 completed") - the
+   image area itself provides the "full blue color" via
+   .detection-popup--blue .detection-popup__image-area above; this is
+   just the centered text sitting on top of it. */
+.detection-popup__blue-text {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #ffffff;
+  text-align: center;
+  padding: 0 var(--spacing-lg);
+}
+
 .detection-popup__image-area {
   flex: 1;
   min-height: 0;

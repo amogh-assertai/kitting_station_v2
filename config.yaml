@@ -75,5 +75,6 @@ features:
 live_kitting:
   green_popup_uptime_sec: 2
   red_popup_uptime_sec: 3
+  validate_popup_uptime_sec: 2
   detection_image_dir: "data/detections"
   allowed_image_extensions: [".jpg", ".jpeg", ".png"]

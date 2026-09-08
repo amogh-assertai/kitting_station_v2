@@ -328,4 +328,10 @@ def monitor(activity_id):
         table_name=view["table_name"],
         green_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["green_popup_uptime_sec"],
         red_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["red_popup_uptime_sec"],
+        # NEW this session - config.yaml needs a new
+        # live_kitting.validate_popup_uptime_sec key (client's explicit
+        # call: a dedicated key, not reusing green's) - see
+        # TSD_LIVE_KITTING_ACTIVITIES.md for the exact addition and the
+        # matching app/config/loader.py fail-fast validation entry.
+        validate_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["validate_popup_uptime_sec"],
     )

@@ -210,10 +210,11 @@ def validate_kit():
 
     try:
         settings = _live_kitting_settings()
-        # Image on validate_now is saved for audit purposes if sent, but
-        # not otherwise used (no image_path is attached to the kit-advance
-        # event - there's no detection_events document for this action).
-        detection_data.save_detection_image(
+        # Image on validate_now is now THREADED THROUGH to
+        # detection_data.validate_kit() (NEW this session) so the
+        # kit-completion confirmation pop-up can show it - previously
+        # saved to disk and then discarded entirely.
+        image_path = detection_data.save_detection_image(
             base_dir=current_app.config["BASE_DIR"],
             detection_image_dir=settings["detection_image_dir"],
             table_id=int(form.get("tableid")) if form.get("tableid") else None,
@@ -226,7 +227,7 @@ def validate_kit():
         return jsonify(success=False, reason="validation_error", message="tableid is required and must be an integer."), 400
 
     try:
-        result = detection_data.validate_kit(_activities_collection(), form)
+        result = detection_data.validate_kit(_activities_collection(), form, image_path)
     except detection_data.ValidationError as exc:
         if exc.reason == detection_data.REASON_CAMERA_LOCKED:
             current_app.logger.info(
@@ -255,12 +256,22 @@ def validate_kit():
         sound = detection_data.resolve_sound_for_detection(activity_doc_for_sound, result["cam_id"], matched=False)
         audio_url = _audio_url_for(result["table_id"], sound["slot_id"])
 
+        # NEW - the validation image sent with this validate_now call
+        # (if any) is now shown on the red-screen, same as
+        # wrong_part's error:red already does with its own detection
+        # image. result["error"]["image_path"] is the same value
+        # detection_data.validate_kit() just stored on the persisted
+        # current_kit_errors_cam{N} object (see detection_data.py).
+        image_url = None
+        if result["error"].get("image_path"):
+            image_url = f"/api/detection-image/{result['error']['image_path']}"
+
         socketio.emit(
             "error:red",
             {
                 "cam_id": result["cam_id"],
                 "error": result["error"],
-                "image_url": None,
+                "image_url": image_url,
                 "audio_url": audio_url,
             },
             room=room,
@@ -273,6 +284,49 @@ def validate_kit():
             activity_fully_completed=False,
             message="Validation error - awaiting operator resolution.",
         )
+
+    # NEW this session - kit-completion confirmation pop-up. Fires on
+    # EVERY clean advance (no validation_error), before/alongside
+    # "kit:advanced" - client's report: "on validation, nothing shows...
+    # if red screen is not coming, then show kit 1 completed, next kit
+    # 2." Two variants:
+    #   - Normal advance (this camera still has kits left): GREEN,
+    #     "Kit <old> completed, next Kit <new>", with the validation
+    #     image if one was sent.
+    #   - Final advance (is_completed True - this WAS the camera's last
+    #     kit): BLUE (client's explicit call - a third, distinct color
+    #     from green/red), image area replaced with solid blue + centered
+    #     "All kits in Cam<N> completed" text - no "next kit" exists.
+    image_url = None
+    if result["image_path"]:
+        image_url = f"/api/detection-image/{result['image_path']}"
+
+    audio_url = None
+    if not result["is_completed"]:
+        # Reuses the exact same green-sound resolution a matched
+        # detection would use - client said "similar to green-pop" for
+        # the normal-advance variant. No sound rule was specified for
+        # the terminal "all kits completed" variant, so none plays for
+        # it (silence, not an assumption toward some other color's
+        # sound) - flagged as an assumption below.
+        from bson import ObjectId
+        activity_doc_for_sound = _activities_collection().find_one({"_id": ObjectId(result["activity_id"])})
+        sound = detection_data.resolve_sound_for_detection(activity_doc_for_sound, result["cam_id"], matched=True)
+        audio_url = _audio_url_for(result["table_id"], sound["slot_id"])
+
+    socketio.emit(
+        "kit:validated",
+        {
+            "cam_id": result["cam_id"],
+            "old_kit_index": result["old_kit_index"],
+            "new_kit_index": result["new_kit_index"],
+            "is_completed": result["is_completed"],
+            "image_url": image_url,
+            "audio_url": audio_url,
+            "popup_uptime_sec": _live_kitting_settings()["validate_popup_uptime_sec"],
+        },
+        room=room,
+    )
 
     socketio.emit(
         "kit:advanced",
