@@ -632,6 +632,95 @@ def build_monitor_view(doc):
         "cam2": _camera_summary("cam2", doc.get("current_kit_index_cam2", 1)),
     }
 
+
+# ---------------------------------------------------------------------------
+# "See current settings" modal (NEW this round)
+#
+# Client's explicit requirements:
+#   - reads whatever is on the LIVE ACTIVITY's own snapshot fields
+#     (parts_configured / neglect_parts / camerawise_alert_config) -
+#     NEVER re-reads current_kit_configurations (the kit's master
+#     config doc), since the whole point is showing what THIS activity
+#     is actually running against right now, which can differ from the
+#     kit's live config the moment someone edits it mid-run (see
+#     current_kits_data.update_kit_live_snapshot - if that propagation
+#     succeeded, this view reflects it immediately on next fetch; if a
+#     kit_id mismatch or a non-live status excluded this activity from
+#     that propagation, this view will correctly show the OLD snapshot,
+#     which is exactly the point of reading the activity doc directly)
+#   - fetched FRESH from MongoDB on every button click (routes.py calls
+#     a plain find_one right before calling this function - no caching
+#     anywhere in this path)
+#   - includes activity-level runtime state alongside the static
+#     config (current_kit_index, camera_state, green_sound_enabled per
+#     camera) - client: "Yes, also show camera_state, current_kit_index,
+#     sound toggle state, etc."
+# ---------------------------------------------------------------------------
+
+def build_current_settings_view(doc):
+    """Shapes one live_activity_details document into the flat
+    kit-info + per-camera structure the settings modal renders. Pure
+    function of the doc already in hand - routes.py is responsible for
+    the actual fresh find_one() (see cv_ingest/routes.py's
+    activity_settings route), this function does no DB access itself,
+    same separation as build_monitor_view."""
+
+    def _camera_alert_config_for(camera):
+        for entry in doc.get("camerawise_alert_config", []):
+            if entry.get("camera") == camera:
+                return {
+                    "alert_validation_error": bool(entry.get("alert_validation_error", True)),
+                    "alert_wrong_part_error": bool(entry.get("alert_wrong_part_error", True)),
+                }
+        # Defensive default, mirrors cv_ingest/detection_data.py's own
+        # _camera_alert_switches() fallback - should not normally be
+        # hit, since every activity is seeded with exactly one entry
+        # per camera at creation (see create_live_activity).
+        return {"alert_validation_error": True, "alert_wrong_part_error": True}
+
+    def _parts_for(camera):
+        return [
+            {
+                "part_name": p.get("part_name"),
+                "quantity_required": p.get("quantity_required"),
+                "alert_missing": bool(p.get("alert_missing")),
+                "alert_undercount": bool(p.get("alert_undercount")),
+                "alert_overcount": bool(p.get("alert_overcount")),
+            }
+            for p in doc.get("parts_configured", [])
+            if p.get("camera") == camera
+        ]
+
+    def _neglect_parts_for(camera):
+        return [
+            {"part_name": p.get("part_name")}
+            for p in doc.get("neglect_parts", [])
+            if p.get("camera") == camera
+        ]
+
+    def _camera_block(camera):
+        return {
+            "current_kit_index": doc.get(f"current_kit_index_{camera}", 1),
+            "camera_state": doc.get(f"camera_state_{camera}", "open"),
+            "green_sound_enabled": doc.get(f"green_sound_enabled_{camera}", True),
+            "parts": _parts_for(camera),
+            "neglect_parts": _neglect_parts_for(camera),
+            "camera_alert_config": _camera_alert_config_for(camera),
+        }
+
+    return {
+        "activity_id": str(doc["_id"]),
+        "table_id": doc.get("table_id"),
+        "table_name": doc.get("table_name"),
+        "kit_name": doc.get("kit_name"),
+        "edp_number": doc.get("edp_number"),
+        "order_number": doc.get("order_number"),
+        "quantity_required": doc.get("quantity_required"),
+        "status": doc.get("status"),
+        "cam1": _camera_block("cam1"),
+        "cam2": _camera_block("cam2"),
+    }
+
 def complete_activity_manually(activities_collection, history_collection, activity_id, reason):
     """Moves a live activity to the history collection with status
     "completed-manually". Copies the full document rather than deleting

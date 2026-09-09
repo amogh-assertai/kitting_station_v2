@@ -772,3 +772,173 @@
   font-size: 0.9375rem;
   color: var(--color-text-muted);
 }
+
+/* ---------- "See current settings" modal (NEW this round) ---------- */
+/* Fixed backdrop covering the WHOLE viewport (not just .app-main), same
+   reasoning as .activity-complete-overlay above - a modal should sit
+   above the entire page, including the header/nav, not just the
+   monitor content area. [hidden] override follows the same convention
+   already established for .detection-popup and
+   .activity-complete-overlay (browser's default [hidden] rule and this
+   file's own "display: flex" would otherwise tie at equal specificity
+   and the LATER one in source order wins - explicit [hidden] override
+   avoids relying on rule order to get this right). */
+
+.settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.55);
+  padding: var(--spacing-lg);
+}
+
+.settings-modal-backdrop[hidden] {
+  display: none;
+}
+
+.settings-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: min(80vh, 720px);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.settings-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-modal__title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.settings-modal__close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+}
+
+.settings-modal__close:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-accent-hover-bg);
+}
+
+.settings-modal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-lg);
+}
+
+.settings-modal__loading,
+.settings-modal__error {
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+}
+
+.settings-modal__error {
+  color: #dc2626;
+}
+
+.settings-section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.settings-section__title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0 0 var(--spacing-sm);
+  padding-bottom: var(--spacing-xs);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-subsection__title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  margin: var(--spacing-md) 0 var(--spacing-xs);
+}
+
+.settings-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem var(--spacing-md);
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.settings-kv dt {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.settings-kv dd {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.settings-table th,
+.settings-table td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-table th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.settings-table__empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.settings-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.875rem;
+}
+
+.settings-list__empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+  list-style: none;
+  margin-left: -1.1rem;
+}
+

@@ -266,6 +266,29 @@
     <span class="activity-complete-overlay__text">Activity Completed</span>
     <span class="activity-complete-overlay__subtext">Returning to Live Kitting Activities&hellip;</span>
   </div>
+
+  <!-- "See current settings" modal (NEW this round) - client's explicit
+       call: a modal/pop-up, not a new page, with a Close button.
+       Content is populated FRESH from a server fetch every time it's
+       opened (never cached, never reused from this page's own initial
+       render) - see monitor.js's openSettingsModal(). Hidden by
+       default; reuses the same [hidden] override convention already
+       established for .detection-popup and .activity-complete-overlay
+       (see monitor.css). -->
+  <div class="settings-modal-backdrop" data-settings-modal-backdrop hidden>
+    <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="settings-modal__header">
+        <h2 class="settings-modal__title" id="settings-modal-title">Current Settings</h2>
+        <button type="button" class="settings-modal__close" data-settings-modal-close aria-label="Close">&times;</button>
+      </div>
+      <div class="settings-modal__body" data-settings-modal-body>
+        <!-- Populated entirely by monitor.js on open - no server-rendered
+             content here, since the whole point is a FRESH fetch every
+             click, not whatever the page looked like at initial load. -->
+        <p class="settings-modal__loading" data-settings-modal-loading>Loading current settings&hellip;</p>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 

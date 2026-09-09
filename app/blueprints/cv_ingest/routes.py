@@ -512,6 +512,56 @@ def detection_image(table_dir, filename):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/activity-settings/<activity_id> - "See current settings" modal
+# (NEW this round). Client's explicit requirements:
+#   - reads the LIVE ACTIVITY's own snapshot (parts_configured /
+#     neglect_parts / camerawise_alert_config), NEVER the kit's master
+#     config doc in current_kit_configurations - "dont load from
+#     configuration table, load whats in current activity."
+#   - fresh from MongoDB on EVERY click, not cached/reused from the
+#     page's initial render - a plain find_one() right here, every call.
+#   - includes runtime state too (current_kit_index, camera_state,
+#     green_sound_enabled), not just static kit config.
+# No url_prefix on this blueprint (same as every other cv_ingest route),
+# so this sits alongside /api/detection-update etc. even though it's a
+# read-only GET rather than a DeepStream ingest call - kept here rather
+# than in live_kitting_activities/routes.py because it reads the exact
+# same collection/document shape every OTHER cv_ingest route already
+# owns, and activities_data.build_current_settings_view (the shaping
+# function) lives in live_kitting_activities/activities_data.py, which
+# this blueprint can freely import (data-shaping modules are meant to be
+# reused across blueprints; only the Flask route registration itself
+# stays blueprint-local, per this project's existing decoupling
+# convention - see cv_ingest/routes.py's own comment on
+# _room_for_activity duplication for the general rule this appears to
+# bend, but importing a pure data-shaping function is not the same as
+# duplicating route logic).
+# ---------------------------------------------------------------------------
+
+@cv_ingest_bp.route("/api/activity-settings/<activity_id>")
+def activity_settings(activity_id):
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    from app.blueprints.live_kitting_activities import activities_data
+
+    try:
+        object_id = ObjectId(activity_id)
+    except InvalidId:
+        return jsonify(success=False, error="Invalid activity id."), 400
+
+    try:
+        doc = _activities_collection().find_one({"_id": object_id})
+    except PyMongoError:
+        return jsonify(success=False, error="Could not connect to the database."), 500
+
+    if not doc:
+        return jsonify(success=False, error="Activity not found."), 404
+
+    view = activities_data.build_current_settings_view(doc)
+    return jsonify(success=True, settings=view)
+
+
+# ---------------------------------------------------------------------------
 # Socket.IO room join - the monitor page joins this on load so it only
 # receives events for the activity it's currently displaying
 # ---------------------------------------------------------------------------

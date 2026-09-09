@@ -680,6 +680,170 @@ function handleConfigUpdated(payload) {
 }
 
 /**
+ * "See current settings" modal (NEW this round). Client's explicit
+ * requirements:
+ *   - fetches FRESH from the server EVERY click - GET
+ *     /api/activity-settings/<id>, never reused/cached from a previous
+ *     open or from this page's own initial render data.
+ *   - modal/pop-up with a Close button, not a new page.
+ *   - shows the LIVE ACTIVITY's own snapshot (parts/neglect/alert
+ *     config), grouped by camera, plus per-camera runtime state
+ *     (current_kit_index, camera_state, green_sound_enabled) - see
+ *     activities_data.build_current_settings_view for exactly what the
+ *     endpoint returns.
+ * Closeable via the X button, clicking the backdrop, or Escape - three
+ * ways in, matching the general expectation for any modal on this kind
+ * of touch/kiosk HMI where a keyboard may or may not be attached.
+ */
+function initSettingsModal() {
+  const monitorPage = document.querySelector('.monitor-page');
+  const openBtn = document.querySelector('.monitor-settings-btn');
+  const backdrop = document.querySelector('[data-settings-modal-backdrop]');
+  const closeBtn = document.querySelector('[data-settings-modal-close]');
+  const body = document.querySelector('[data-settings-modal-body]');
+  if (!monitorPage || !openBtn || !backdrop || !closeBtn || !body) return;
+
+  const activityId = monitorPage.dataset.activityId;
+
+  function closeModal() {
+    backdrop.hidden = true;
+  }
+
+  function openModal() {
+    backdrop.hidden = false;
+    // Reset to a loading state EVERY open, before the fetch resolves -
+    // if the previous open's content is still in the DOM, briefly
+    // showing stale data (even for a moment) would contradict "fetch
+    // the LATEST config every time I click."
+    body.innerHTML = '<p class="settings-modal__loading">Loading current settings&hellip;</p>';
+
+    fetch(`/api/activity-settings/${activityId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.success) {
+          body.innerHTML = `<p class="settings-modal__error">Could not load settings: ${escapeHtml(data.error || 'Unknown error')}</p>`;
+          return;
+        }
+        body.innerHTML = renderSettingsContent(data.settings);
+      })
+      .catch((err) => {
+        console.warn('Failed to fetch activity settings:', err);
+        body.innerHTML = '<p class="settings-modal__error">Could not load settings. Check your connection and try again.</p>';
+      });
+  }
+
+  openBtn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  backdrop.addEventListener('click', (event) => {
+    // Only closes when the backdrop ITSELF is clicked, not a click
+    // that bubbles up from inside .settings-modal - same "click
+    // outside to close" convention as most modal implementations.
+    if (event.target === backdrop) closeModal();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !backdrop.hidden) closeModal();
+  });
+}
+
+/**
+ * Minimal HTML-escaping for text interpolated into innerHTML below -
+ * part names, kit names, etc. all come from MongoDB (ultimately typed
+ * by an operator in Current Kits Configuration), so this is not
+ * optional even on an internal on-prem tool.
+ */
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str == null ? '' : String(str);
+  return div.innerHTML;
+}
+
+/**
+ * Builds the modal body's full HTML from one
+ * activities_data.build_current_settings_view() response. Grouped
+ * sections per client's spec: Kit info -> Parts (cam1/cam2) -> Neglect
+ * list -> Camera Alert Config, repeated per camera block.
+ */
+function renderSettingsContent(settings) {
+  const kitInfoHtml = `
+    <div class="settings-section">
+      <h3 class="settings-section__title">Kit Info</h3>
+      <dl class="settings-kv">
+        <dt>Order</dt><dd>${escapeHtml(settings.order_number)}</dd>
+        <dt>Kit name</dt><dd>${escapeHtml(settings.kit_name)}</dd>
+        <dt>EDP</dt><dd>${escapeHtml(settings.edp_number)}</dd>
+        <dt>Quantity required</dt><dd>${escapeHtml(settings.quantity_required)}</dd>
+        <dt>Status</dt><dd>${escapeHtml(settings.status)}</dd>
+      </dl>
+    </div>
+  `;
+
+  const cameraBlocks = ['cam1', 'cam2'].map((camId) => renderCameraSettingsBlock(camId, settings[camId])).join('');
+
+  return kitInfoHtml + cameraBlocks;
+}
+
+function renderCameraSettingsBlock(camId, cam) {
+  const camLabel = camId === 'cam1' ? 'Camera 1' : 'Camera 2';
+
+  const runtimeHtml = `
+    <dl class="settings-kv">
+      <dt>Current kit index</dt><dd>${escapeHtml(cam.current_kit_index)}</dd>
+      <dt>Camera state</dt><dd>${escapeHtml(cam.camera_state)}</dd>
+      <dt>Green sound enabled</dt><dd>${cam.green_sound_enabled ? 'Yes' : 'No'}</dd>
+    </dl>
+  `;
+
+  const partsRows = cam.parts.length
+    ? cam.parts.map((p) => `
+        <tr>
+          <td>${escapeHtml(p.part_name)}</td>
+          <td>${escapeHtml(p.quantity_required)}</td>
+          <td>${p.alert_missing ? 'Yes' : 'No'}</td>
+          <td>${p.alert_undercount ? 'Yes' : 'No'}</td>
+          <td>${p.alert_overcount ? 'Yes' : 'No'}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="5" class="settings-table__empty">No parts configured for this camera.</td></tr>';
+
+  const partsHtml = `
+    <table class="settings-table">
+      <thead>
+        <tr>
+          <th>Part</th><th>Qty required</th><th>Alert missing</th><th>Alert undercount</th><th>Alert overcount</th>
+        </tr>
+      </thead>
+      <tbody>${partsRows}</tbody>
+    </table>
+  `;
+
+  const neglectRows = cam.neglect_parts.length
+    ? cam.neglect_parts.map((p) => `<li>${escapeHtml(p.part_name)}</li>`).join('')
+    : '<li class="settings-list__empty">None</li>';
+
+  const neglectHtml = `<ul class="settings-list">${neglectRows}</ul>`;
+
+  const alertConfigHtml = `
+    <dl class="settings-kv">
+      <dt>Validation Error Alert</dt><dd>${cam.camera_alert_config.alert_validation_error ? 'Enabled' : 'Disabled'}</dd>
+      <dt>Wrong Part Error Alert</dt><dd>${cam.camera_alert_config.alert_wrong_part_error ? 'Enabled' : 'Disabled'}</dd>
+    </dl>
+  `;
+
+  return `
+    <div class="settings-section">
+      <h3 class="settings-section__title">${camLabel}</h3>
+      ${runtimeHtml}
+      <h4 class="settings-subsection__title">Parts</h4>
+      ${partsHtml}
+      <h4 class="settings-subsection__title">Parts to Neglect</h4>
+      ${neglectHtml}
+      <h4 class="settings-subsection__title">Camera Alert Configuration</h4>
+      ${alertConfigHtml}
+    </div>
+  `;
+}
+
+/**
  * Wires the red-screen's two resolution buttons + optional comment box
  * + Submit. One shared handler for both camera's fixed popup elements
  * (same "one fixed element per camera, re-populate on each event"
@@ -1242,4 +1406,5 @@ document.addEventListener('DOMContentLoaded', () => {
   initSoundToggles();
   initErrorResolutionControls();
   initActiveErrorsOnLoad();
+  initSettingsModal();
 });
