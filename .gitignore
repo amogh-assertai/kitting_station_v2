@@ -10,3 +10,5 @@ server_related/
 data/detections/*
 bugs_to_solve.txt
 all_images/*
+run_kiosk_cloud.sh
+run_kiosk.sh

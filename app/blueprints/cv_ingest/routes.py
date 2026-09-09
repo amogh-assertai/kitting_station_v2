@@ -119,15 +119,19 @@ def detection_update():
     audio_url = _audio_url_for(result["table_id"], result["audio_slot_id"])
 
     room = _room_for_activity(result["activity_id"])
-    if result["matched"] or result["neglected"]:
-        # NEW - a neglected-part detection now ALSO takes the green
-        # path (client's explicit reversal: "dont give error sound
-        # instead give green sound and green pop-up"). "neglected" flag
-        # tells monitor.js whether to create a NEW red-tinted "Neglected"
-        # card (client card, not the live pop-up, which stays green) if
-        # this is the first time this part's been seen this kit, since
-        # a neglected part has no Pending-section placeholder to find
-        # and flip the way a real configured part does.
+    if result["plays_as_green"]:
+        # Green path covers THREE cases now (this round widened it from
+        # two): a real matched part, a neglected-list part (both
+        # unchanged from before), and - NEW this round - a genuine
+        # wrong_part occurrence where alert_wrong_part_error is OFF for
+        # this camera/kit (client's explicit correction: "it should
+        # give green-pop and sound based on configuration but in
+        # database log it has wrong part"). "neglected" and
+        # "wrong_part" flags tell monitor.js which kind of NEW card to
+        # build (a neglected part has no Pending-section placeholder to
+        # find/flip; a wrong_part occurrence never had one either, and
+        # is never grouped/counted the way neglected is - see
+        # monitor.js's createNeglectedCard vs createWrongPartCard).
         socketio.emit(
             "detection:green",
             {
@@ -141,17 +145,20 @@ def detection_update():
                 "popup_uptime_sec": _live_kitting_settings()["green_popup_uptime_sec"],
                 "audio_url": audio_url,
                 "neglected": result["neglected"],
+                "wrong_part": result["wrong_part"],
             },
             room=room,
         )
     elif result["error"]:
-        # NEW - this unmatched detection just raised a wrong_part
-        # red-screen (the camera's alert_wrong_part_error master switch
-        # was on for this kit's config). BLOCKING event, distinct from
-        # the plain "detection:red" below - no popup_uptime_sec, no
-        # auto-hide timer; monitor.js keeps this on screen (and the
-        # audio looping/held, if enabled) until the operator resolves
-        # via /api/resolve-error (client: "stay till operator choose
+        # This unmatched detection just raised a wrong_part red-screen
+        # (the camera's alert_wrong_part_error master switch was ON for
+        # this kit's config - if it were off, result["plays_as_green"]
+        # above would already be True and this branch would never be
+        # reached). BLOCKING event, distinct from the plain
+        # "detection:red" below - no popup_uptime_sec, no auto-hide
+        # timer; monitor.js keeps this on screen (and the audio
+        # looping/held, if enabled) until the operator resolves via
+        # /api/resolve-error (client: "stay till operator choose
         # anyone").
         socketio.emit(
             "error:red",
@@ -164,15 +171,16 @@ def detection_update():
             room=room,
         )
     else:
-        # Genuinely unmatched (wrong_part) but NOT raised as a
-        # red-screen - the camera's alert_wrong_part_error master
-        # switch is off for this kit/camera (client: "still logged in
-        # backend" via record_detection's normal audit-log push AND its
-        # own individual wrong_part_cards entry - see
-        # activities_data.build_monitor_view - just no red-screen).
-        # Neglected-part detections NEVER reach this branch anymore
-        # (client's reversal this session moved them into the
-        # matched/neglected green branch above).
+        # This branch is now UNREACHABLE for a genuine wrong_part
+        # detection (switch off -> plays_as_green branch above; switch
+        # on -> error:red branch above) and was never reachable for
+        # neglected either. Kept only as a defensive fallback in case a
+        # future code path introduces a fourth outcome that is neither
+        # green nor a red-screen - if you find yourself here, something
+        # upstream returned a combination of matched/neglected/
+        # wrong_part/error that this function doesn't yet know how to
+        # classify; treat that as a bug to fix in record_detection's
+        # outcome logic, not a legitimate steady-state case.
         socketio.emit(
             "detection:red",
             {

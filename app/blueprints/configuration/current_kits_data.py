@@ -319,6 +319,97 @@ def update_kit(collection, table_id, kit_id, payload):
     if result.matched_count == 0:
         raise ValidationError("Kit not found.")
 
+    # NEW - returns the same normalized data dict just written, so
+    # routes.py can pass it straight into update_kit_live_snapshot()
+    # without a second find_one() round trip to re-fetch what it
+    # already has in hand. update_kit()'s call sites before this round
+    # ignored the return value entirely (it was previously None), so
+    # this is purely additive - no existing caller breaks.
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Live-activity propagation (NEW this round)
+#
+# live_activity_details snapshots parts/neglect_parts/camerawise_alert_config
+# from the kit doc ONCE, at activity creation (see
+# live_kitting_activities/activities_data.create_live_activity) - by
+# design, so an already-running activity is never silently affected by a
+# LATER, unrelated edit somewhere else in Current Kits Configuration.
+#
+# Client's explicit ask this round reverses that for the ONE case where
+# it's actually useful: editing THE SAME kit an activity is already
+# running. If an operator is mid-kit and the client (or another operator)
+# realizes a part's alert config was wrong, they now don't have to
+# abandon/restart the activity to get the fix - update_kit_live_snapshot()
+# below is called right after a successful update_kit() and pushes the
+# same three fields onto any live activity whose kit_id matches the one
+# just edited (client: "match on kit_id", not "any activity on this
+# table" - editing Kit B should never affect an activity currently
+# running Kit A on the same table).
+# ---------------------------------------------------------------------------
+
+def find_live_activities_for_kit(live_activities_collection, kit_id):
+    """Returns every live_activity_details document currently
+    status="live" whose kit_id matches the kit that was just edited.
+    Plural, not singular - the FRD's "only one live activity per table"
+    rule is per TABLE, not per KIT, and a kit's serial_number/edp_number
+    (but not its _id) are only unique within a table, not globally - in
+    principle the SAME kit document could theoretically be referenced by
+    more than one still-live activity if multiple tables ever shared
+    kit documents in the future. Scoping this query to kit_id alone
+    (not also table_id) is intentional and future-proof for that reason,
+    though today's schema (kit belongs to exactly one table) makes it
+    a moot point in practice.
+    """
+    object_id = _to_object_id(kit_id)
+    return list(
+        live_activities_collection.find({"kit_id": object_id, "status": "live"})
+    )
+
+
+def update_kit_live_snapshot(live_activities_collection, kit_id, updated_kit_data):
+    """Pushes parts_configured/neglect_parts/camerawise_alert_config from
+    the JUST-UPDATED kit doc onto every matching live activity's
+    snapshot (see find_live_activities_for_kit, above). updated_kit_data
+    is the SAME normalized dict update_kit() already built via
+    _validate_kit_payload() - reused here rather than re-fetching the
+    kit doc from Mongo a second time, since the caller (routes.py) has
+    it in hand immediately after a successful update_kit() call.
+
+    Returns the list of activity_id strings that were actually updated,
+    so the caller can emit a "config:updated" socket event to each
+    affected activity's room - client's explicit ask: "broadcast an
+    update so viewers see new config-driven behavior without
+    refreshing."
+
+    Deliberately does NOT touch quantity_required, order_number, or any
+    other activity-specific field that has nothing to do with the KIT's
+    own configuration - only the three fields that originate from the
+    kit doc and were already being copied at creation time.
+    """
+    object_id = _to_object_id(kit_id)
+    activities = find_live_activities_for_kit(live_activities_collection, kit_id)
+    if not activities:
+        return []
+
+    updated_activity_ids = []
+    for activity in activities:
+        live_activities_collection.update_one(
+            {"_id": activity["_id"]},
+            {
+                "$set": {
+                    "parts_configured": updated_kit_data["parts"],
+                    "neglect_parts": updated_kit_data["neglect_parts"],
+                    "camerawise_alert_config": updated_kit_data["camerawise_alert_config"],
+                    "updated_at": _now_iso(),
+                }
+            },
+        )
+        updated_activity_ids.append(str(activity["_id"]))
+
+    return updated_activity_ids
+
 
 def delete_kit(collection, table_id, kit_id):
     object_id = _to_object_id(kit_id)

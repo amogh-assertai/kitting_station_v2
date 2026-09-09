@@ -59,7 +59,7 @@ except ImportError:
 
 DEFAULT_BASE_URL = "http://localhost:7000"
 
-#DEFAULT_BASE_URL = "http://3.101.116.148:7000"
+DEFAULT_BASE_URL = "http://3.101.116.148:7000"
 
 # All images live alongside this script, not the current working
 # directory - resolved once via __file__ so the script behaves

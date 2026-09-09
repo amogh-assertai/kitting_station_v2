@@ -262,16 +262,31 @@ function handleGreenDetection(payload) {
       card.appendChild(badge);
     }
   } else if (payload.neglected) {
-    // NEW - a neglected part has no Pending-section placeholder to
-    // find (it's not in parts_configured at all), so the FIRST time
-    // it's detected in a kit there is nothing for findPartCard() to
-    // return. Build the card live, matching the same markup shape
+    // A neglected part has no Pending-section placeholder to find
+    // (it's not in parts_configured at all), so the FIRST time it's
+    // detected in a kit there is nothing for findPartCard() to return.
+    // Build the card live, matching the same markup shape
     // build_monitor_view/monitor.html produce on a page load - grouped
     // by name (client: "count increments like a normal part"), so a
     // SECOND detection of the same neglected part goes through the
     // normal "found existing card" branch above instead of creating a
     // duplicate.
     createNeglectedCard(panel, payload);
+  } else if (payload.wrong_part) {
+    // NEW this round - a genuine wrong_part detection where
+    // alert_wrong_part_error is OFF for this camera/kit now ALSO plays
+    // green (client's correction), but unlike neglected it is NEVER
+    // grouped/counted - same createWrongPartCard() used by the
+    // non-blocking detection:red path and the blocking error:red path,
+    // so all three wrong_part entry points produce an identical
+    // INDIVIDUAL card, just reached via a different pop-up color this
+    // time. No resolutionCode yet - a switch-off wrong_part is never
+    // gated behind a red-screen, so there is no operator resolution to
+    // show a badge for.
+    createWrongPartCard(panel, {
+      partName: payload.part_name,
+      resolutionCode: null,
+    });
   } else {
     console.warn('detection:green for a part not found on this panel - part configuration may have changed mid-activity.', payload);
   }
@@ -641,6 +656,27 @@ function handleErrorResolved(payload) {
       popupEl._pendingWrongPartCard = null;
     }
   }
+}
+
+/**
+ * Handles "config:updated" (NEW this round) - fires when an operator
+ * edits the kit currently running as THIS activity in Current Kits
+ * Configuration (client's ask: "check if any live activity is there
+ * and update the configuration of live activity also... broadcast an
+ * update so viewers see new config-driven behavior without
+ * refreshing"). No visible element on this page currently mirrors
+ * parts_configured/neglect_parts/camerawise_alert_config directly - the
+ * per-part alert flags and camera master switches only ever affect
+ * SERVER-side detection/validate logic, which already re-reads the
+ * activity doc fresh on every single call, so the propagation itself
+ * needs no client-side action to "take effect." This handler exists so
+ * the change is at least visible for confirmation/debugging without
+ * opening devtools, and as the hook point if a future build DOES want
+ * to reflect live config changes visually (e.g. a toast, or an updated
+ * on-screen alert-config summary).
+ */
+function handleConfigUpdated(payload) {
+  console.log('Kit configuration updated for this activity - new detections/validations will use the updated config.', payload);
 }
 
 /**
@@ -1196,6 +1232,7 @@ function initSocket() {
   socket.on('activity:completed', handleActivityCompleted);
   socket.on('error:red', handleErrorRed);
   socket.on('error:resolved', handleErrorResolved);
+  socket.on('config:updated', handleConfigUpdated);
 }
 
 document.addEventListener('DOMContentLoaded', () => {

@@ -552,6 +552,22 @@ def record_detection(activities_collection, form, image_path):
         switches = _camera_alert_switches(activity_doc, cam_id)
         should_raise_wrong_part = switches["alert_wrong_part_error"]
 
+    # NEW (this round) - when alert_wrong_part_error is OFF, a genuine
+    # wrong_part detection now plays GREEN (pop-up + sound), not red -
+    # client's explicit correction: "any detection if Wrong Part Error
+    # Alert is disabled and wrong part comes, it should give green-pop
+    # and sound based on configuration but in database log it has wrong
+    # part." This is DIFFERENT from neglected parts, which are also
+    # green but GROUPED/counted (X/0) - a switch-off wrong_part stays
+    # INDIVIDUAL/uncounted (its own card, no running count), only the
+    # pop-up/sound color changes. plays_as_green (used below for sound
+    # resolution and the API response) intentionally does NOT imply
+    # "counts like a real part" - that distinction is still governed by
+    # `matched or is_neglected` everywhere a counter/grouping decision
+    # is made (search this file for those exact conditions before
+    # changing either one).
+    plays_as_green = matched or is_neglected or (is_wrong_part_candidate and not should_raise_wrong_part)
+
     event = {
         "detected_part": part_name,
         "ai_detected_part_name": data["ai_detected_part_name"],
@@ -565,7 +581,10 @@ def record_detection(activities_collection, form, image_path):
         # neglected?" from a snapshot that may itself change later
         # (client: "wrong_part or neglected part info should be inside
         # the code somewhere clearly"). One of "matched", "neglected",
-        # "wrong_part".
+        # "wrong_part" - UNCHANGED by plays_as_green above: a
+        # switch-off wrong_part is still tagged "wrong_part" here
+        # (client: "in database log it has wrong part"), even though it
+        # visually plays green.
         "outcome": "matched" if matched else ("neglected" if is_neglected else "wrong_part"),
         "created_at": now,
     }
@@ -698,20 +717,27 @@ def record_detection(activities_collection, form, image_path):
             {"$set": {f"{last_detected_path}.count": count}},
         )
 
-    # NEW - neglected parts play the GREEN sound/pop-up, exactly like a
-    # real matched part (client's explicit reversal: "dont give error
-    # sound instead give green sound and green pop-up"). Pass
-    # matched=True here for sound resolution purposes only - "matched"
-    # in the RETURNED payload below still correctly reflects
-    # parts_configured membership (used elsewhere, e.g. quantity_required),
-    # this local plays_as_green flag is just for picking the green vs
-    # red audio slot.
-    plays_as_green = matched or is_neglected
+    # plays_as_green (widened above to also cover a switch-off
+    # wrong_part) drives sound resolution here. "matched" in the
+    # RETURNED payload below still correctly reflects parts_configured
+    # membership only (used elsewhere, e.g. quantity_required) -
+    # plays_as_green is purely a display/sound decision, never confused
+    # with the schema's real matched/outcome fields.
     sound = resolve_sound_for_detection(updated_doc, cam_id, plays_as_green)
 
     return {
         "matched": matched,
         "neglected": is_neglected,
+        # NEW (this round) - True whenever this detection is a genuine
+        # wrong_part occurrence (unmatched, not neglected), regardless
+        # of switch state. routes.py uses this alongside "error" (below)
+        # to pick the right socket event:
+        #   wrong_part=True,  error=<payload> -> blocking "error:red"  (switch ON)
+        #   wrong_part=True,  error=None       -> "detection:green"    (switch OFF, NEW)
+        #   wrong_part=False, neglected=True   -> "detection:green"    (unchanged)
+        #   wrong_part=False, neglected=False  -> "detection:green" if matched, else n/a
+        "wrong_part": is_wrong_part_candidate,
+        "plays_as_green": plays_as_green,
         "table_id": data["table_id"],
         "cam_id": cam_id,
         "activity_id": str(activity_id),
@@ -723,10 +749,9 @@ def record_detection(activities_collection, form, image_path):
         "detected_at": now,
         "should_play_sound": sound["should_play"],
         "audio_slot_id": sound["slot_id"],
-        # NEW - non-None only when this detection just raised a
-        # wrong_part red-screen. routes.py uses this to decide whether
-        # to emit "error:red" (blocking) INSTEAD OF the normal
-        # "detection:red" (brief, non-blocking) event.
+        # Non-None only when this detection just raised a BLOCKING
+        # wrong_part red-screen (switch on). None both when switch is
+        # off (still wrong_part=True above) and for matched/neglected.
         "error": error_payload,
     }
 

@@ -16,6 +16,8 @@ from flask import (
 from werkzeug.utils import secure_filename
 from pymongo.errors import PyMongoError
 
+from app.extensions import socketio
+
 from . import configuration_bp
 from .pqpr_parser import parse_pqpr_workbook
 from . import current_kits_data as kits_data
@@ -168,6 +170,29 @@ def _table_config_collection():
     settings = current_app.config["SETTINGS"]
     collection_name = settings["mongodb"]["collections"]["table_configuration"]
     return current_app.config["MONGO_DB"][collection_name]
+
+
+def _live_activities_collection():
+    """NEW this round - configuration/routes.py did not previously need
+    to reach the live_activities collection at all (Configuration and
+    Live Kitting Activities were fully decoupled blueprints until now).
+    Same access pattern every other blueprint already uses
+    (app.config["MONGO_DB"][name] via the shared db.py wiring) - no new
+    cross-blueprint import needed, just the collection name."""
+    settings = current_app.config["SETTINGS"]
+    collection_name = settings["mongodb"]["collections"]["live_activities"]
+    return current_app.config["MONGO_DB"][collection_name]
+
+
+def _room_for_activity(activity_id):
+    """Same room-naming convention as cv_ingest/routes.py's own
+    _room_for_activity() - duplicated here rather than imported, per
+    this project's established "blueprints stay decoupled from each
+    other" convention (see cv_ingest/routes.py's own comment on this).
+    Both MUST produce identical room names for a "config:updated" event
+    emitted from here to actually reach viewers who joined via
+    monitor.js's existing "join_activity" handler."""
+    return f"activity:{activity_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +398,40 @@ def current_kits_update(table_id, kit_id):
     _require_built_table(table_id)
     try:
         payload = request.get_json(force=True, silent=True) or {}
-        kits_data.update_kit(_kits_collection(), table_id, kit_id, payload)
+        updated_kit_data = kits_data.update_kit(_kits_collection(), table_id, kit_id, payload)
+
+        # NEW this round - client's explicit ask: "upon updating
+        # configuration, check if any live activity is there and update
+        # the configuration of live activity also." Matches on kit_id
+        # (the exact kit just edited), not table_id - editing Kit B
+        # must never affect an activity currently running Kit A on the
+        # same table. If nothing is live for this kit, this is a cheap
+        # no-op (one find() returning zero documents).
+        updated_activity_ids = kits_data.update_kit_live_snapshot(
+            _live_activities_collection(), kit_id, updated_kit_data
+        )
+        for activity_id in updated_activity_ids:
+            # Client's explicit ask: "broadcast an update so viewers see
+            # new config-driven behavior without refreshing." monitor.js
+            # does not currently listen for this event - see the
+            # accompanying monitor.js change (a minimal handler that
+            # just logs/no-ops today, since there's no live-editable UI
+            # element on the monitor page that reflects
+            # parts_configured/neglect_parts/camerawise_alert_config
+            # directly; the NEXT detection or validate call will simply
+            # use the new snapshot server-side regardless of whether any
+            # viewer is listening). Emitted unconditionally, even if
+            # zero tabs are currently in that room, same as every other
+            # socketio.emit(..., room=...) call in this app.
+            socketio.emit(
+                "config:updated",
+                {
+                    "activity_id": activity_id,
+                    "kit_id": kit_id,
+                },
+                room=_room_for_activity(activity_id),
+            )
+
         return jsonify({"success": True})
     except kits_data.ValidationError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
@@ -737,7 +795,36 @@ def table_settings_audio_file(table_id, slot_id):
     if not path:
         abort(404)
 
-    return send_file(path, mimetype="audio/mpeg")
+    # NEW - every detection/kit-advance/red-screen event on the monitor
+    # page fetches this same URL fresh (client's report: audio files
+    # were being reloaded from the network on every single client, on
+    # every single play, instead of the browser caching them). The
+    # audio file only ever changes on an explicit re-upload (Table
+    # Settings -> Audio Settings -> Replace), which OVERWRITES this
+    # exact path on disk (see _audio_file_path/table_settings_data.py's
+    # single-file-per-slot convention) - so the file's own mtime is a
+    # reliable, zero-extra-bookkeeping cache-invalidation signal:
+    #   - conditional=True turns on Flask/Werkzeug's built-in ETag +
+    #     Last-Modified handling, so a client that already HAS the file
+    #     (matching If-None-Match/If-Modified-Since) gets a 304 instead
+    #     of the audio bytes again - still one small request, but no
+    #     re-download.
+    #   - max_age=3600 additionally tells the browser it doesn't even
+    #     need to make that conditional request for up to an hour -
+    #     skips the network round-trip entirely for repeat plays within
+    #     that window, which is the common case (the same handful of
+    #     audio files playing over and over during one activity). An
+    #     hour, not "forever", so a same-day re-upload during a shift
+    #     is picked up without the operator needing to hard-refresh -
+    #     revisit this number if the client wants a different balance
+    #     between "fewer requests" and "how fast a replaced file takes
+    #     effect for an already-open monitor tab."
+    return send_file(
+        path,
+        mimetype="audio/mpeg",
+        conditional=True,
+        max_age=3600,
+    )
 
 
 @configuration_bp.route(
