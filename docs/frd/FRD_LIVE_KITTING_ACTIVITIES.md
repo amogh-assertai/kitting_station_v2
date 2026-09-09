@@ -32,6 +32,37 @@ below); the rest is captured for a future iteration and not yet
 surfaced anywhere in the UI. Editing Table Settings later does not
 change an already-running activity's snapshot.
 
+## Editing a kit while it's running (NEW this round)
+
+An activity's parts/neglect-list/camera-alert-configuration used to be
+a one-time snapshot, captured at creation and never touched again — the
+explicit rule was "editing a kit later does not retroactively affect an
+already-running activity." **This is now reversed for the one specific
+case where it's actually useful:** if an operator (or the client) edits
+**the exact same kit** an activity is currently running, in Current
+Kits Configuration, the change now propagates immediately to that
+running activity too — no restart needed.
+
+- Matched by the **specific kit** that was edited, not by table. Editing
+  a different kit on the same table never affects an activity currently
+  running some other kit.
+- Only affects activities that are still **live** — a completed or
+  manually-stopped activity's historical record is never touched by a
+  later kit edit.
+- Propagates all three config pieces together: the parts list (with
+  their quantities and alert flags), the neglect list, and the Camera
+  Alert Configuration master switches.
+- Takes effect **immediately** for anything the detection system sends
+  from that point on — no page refresh needed for the new rules to
+  apply server-side.
+- Anyone currently viewing that activity's monitor page is notified the
+  config changed (today: informational only — there's no on-screen
+  element that visually reflects the config itself, so nothing moves or
+  flashes, but the change is confirmed to have happened).
+- Table Settings (Audio Settings, Expected Client IPs, Push
+  Notifications) are **NOT** part of this — that snapshot rule is
+  unchanged; only kit-derived configuration propagates.
+
 ## Monitor page
 
 Full-width, full-height page. Header shows a status pill, both
@@ -50,7 +81,17 @@ Below that, two camera panels side by side.
   kits — it does not keep counting after the activity is effectively
   done.
 - **Order / Kit name / EDP** — read-only summary.
-- **"See current settings"** — placeholder, behavior not yet defined.
+- **"See current settings"** — opens a modal (built this round) showing
+  a fresh-from-the-database snapshot of this activity's own running
+  configuration: kit info, and per camera — current kit index, camera
+  lock state, green-sound toggle state, every configured part with its
+  alert flags, the neglect list, and the Camera Alert Configuration
+  master switches. **Always reads the LIVE ACTIVITY's own snapshot, not
+  the kit's master configuration** — the two can differ (see "Editing a
+  kit while it's running," below) and this is specifically meant to
+  show what THIS run is actually using right now. Re-fetched fresh from
+  the database every time the button is clicked — never cached from a
+  previous open or from the page's own initial load.
 
 ### Per-camera panels (Cam 1 left, Cam 2 right)
 
@@ -98,13 +139,27 @@ Every detection now resolves to exactly one of four outcomes:
 | **Matched** | Part is in this camera's configured parts list | Green, brief | Normal green card, Qty X/Y |
 | **Neglected** | Part is on this camera's "Parts to Neglect" list (Current Kits Configuration) | Green, brief — same as a matched part | Red-tinted "Neglected" card, Qty X/0 (grouped by name, count keeps incrementing on repeat detections) |
 | **Wrong Part Error** | Part is neither configured nor neglected, **and** this camera's Wrong Part Error alert is enabled (Camera Alert Configuration, per kit) | Red, **blocking** — stays on screen until resolved | Red-tinted "Wrong-part" card, one new card per occurrence (never grouped — each has its own resolution) |
-| **Wrong Part (silent)** | Same as above, but this camera's Wrong Part Error alert is **disabled** for this kit | Red, brief (same as the old behavior) | Same "Wrong-part" card as above — still recorded, just doesn't block |
+| **Wrong Part (alert disabled)** | Same as above, but this camera's Wrong Part Error alert is **disabled** for this kit | **Green, brief** — corrected this round; previously showed red | Same "Wrong-part" card as above (still red-tinted, still individual/uncounted) — the DATABASE record always says "wrong part" regardless of which color the operator saw |
 
 **Neglected parts are treated as expected, not unexpected** — client's
 explicit reversal of the original design: a part on the neglect list
 was previously invisible entirely; it now counts, sounds, and shows a
 card, just visually flagged so an operator can see it was detected but
 intentionally not alerted on.
+
+**A genuinely wrong (unrecognized) part with its alert disabled is ALSO
+now treated as visually expected** — a second, later correction: this
+used to show the brief red pop-up regardless of the switch, which
+looked like an alert even though it wasn't blocking anything. It now
+plays the same green pop-up/sound a matched or neglected part would,
+while the permanent record still correctly says "wrong part" — so an
+operator sees a calm green confirmation in the moment, but a supervisor
+reviewing the kit's history later can still see exactly what happened
+and that it was an unrecognized part, not a real one. **Unlike a
+neglected part, a switch-disabled wrong part is never grouped or
+counted** — every occurrence still gets its own individual card, since
+(if the switch were ever turned back on) each occurrence would need its
+own independent operator resolution.
 
 **Validation Error** (the second alert type) is checked at a different
 point — see "Kit advance and validation checks" below, not at
@@ -204,25 +259,44 @@ configured in Configuration → Table Settings → Audio Settings.
   finish or restart the kit. **This toggle is visible and synced to
   everyone currently viewing that activity's monitor page** — if one
   person switches it, everyone else sees it flip too. **Neglected-part
-  detections now use this same green rule** (see "Detection outcomes,"
-  above) — they are no longer silent.
+  detections, and now a switch-disabled wrong-part detection too, use
+  this same green rule** (see "Detection outcomes," above) — neither is
+  silent or red anymore.
 - **Unexpected-part sound (red):** always follows the table's saved
-  default — there is no per-activity toggle for this one. Plays **once**
-  for a non-blocking wrong-part pop-up (switch off), same as before.
-  Plays **on a loop** for the duration of a blocking red-screen (either
-  alert type, switch on) — stops the moment the operator resolves it.
+  default — there is no per-activity toggle for this one. Only plays at
+  all now for a genuine **blocking** red-screen (Wrong Part Error or
+  Validation Error, master switch on) — **on a loop** for as long as
+  the red-screen is showing, stopping the moment the operator resolves
+  it. A wrong-part detection with its alert disabled no longer triggers
+  red audio at all (it plays green audio instead — see above).
 
 If a camera's slot has no audio file uploaded, no sound plays for that
 camera/color regardless of the enabled/disabled setting.
 
-### Kit advance ("validate")
+### Kit advance ("validate") confirmation pop-up
 
-When the detection system signals a camera's current kit is done, that
-camera's kit index moves forward by one (e.g. "Kit #3" → "Kit #4"), its
-Completed/Pending list resets to a fresh, empty state, and its Kit
-timer resets to 0:00:00. The other camera is not affected. Everything
-detected for the finished kit stays on record — nothing is deleted, it
-just stops being shown live once a new kit starts.
+Added this round: when the detection system signals a camera's current
+kit is done and **no Validation Error red-screen was raised** (see
+above), the camera's panel now shows a brief confirmation pop-up before
+reverting to normal — previously this was silent, giving no on-screen
+feedback that the validate actually registered.
+
+Two variants:
+
+- **Normal advance** (this camera still has kits left to pack): green
+  pop-up reading "Kit `<N>` completed | Next: Kit `<N+1>`", showing the
+  validation image if the detection system sent one with its
+  `validate_now` signal.
+- **Final advance** (this WAS the camera's last kit): a distinct
+  **blue** pop-up — the image area is replaced with solid blue and
+  centered text reading "All kits in Cam`<N>` completed." There is no
+  "next kit" to name.
+
+Both variants stay on screen for a separately-configurable duration
+(shorter than a full "read this carefully" red-screen, since there's
+nothing to act on), then the panel reverts — to its normal Completed/
+Pending view for a mid-activity advance, or to the existing "Kits
+Completed" state for the final one.
 
 ### Completion — one camera
 
@@ -270,7 +344,9 @@ failure, a specific reason — not just a generic error:
   part was detected, when it was validated, every individual
   detection's own timestamp, and now every alert raised and how it was
   resolved — but there's no viewer for it yet)
-- "See current settings" and "History" button behavior
+- "History" button behavior (per-kit detection/timing/alert history
+  viewer — "See current settings" is now built, see above; "History" is
+  a separate, still-unbuilt feature)
 - Table 2 / Table 3 activities
 - Expected Client IPs and Push Notification settings captured in the
   activity snapshot are not yet used anywhere — reserved for a future

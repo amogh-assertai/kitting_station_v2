@@ -6,7 +6,7 @@ Technical spec for the Configuration blueprint: **table registry/selection**, **
 
 | File | Role |
 |---|---|
-| `app/blueprints/configuration/routes.py` | All HTTP routes — landing/table selection, Current Kits, PQPR Analytics, Table Settings. Every route except the landing page takes `table_id` as a URL path parameter. |
+| `app/blueprints/configuration/routes.py` | All HTTP routes — landing/table selection, Current Kits, PQPR Analytics, Table Settings. Every route except the landing page takes `table_id` as a URL path parameter. Also emits `config:updated` to a live activity's Socket.IO room when its kit is edited (NEW this round — see "Live-activity propagation" below). |
 | `app/blueprints/configuration/current_kits_data.py` | MongoDB data access + validation for Current Kits (`current_kit_configurations` collection) |
 | `app/blueprints/configuration/table_settings_data.py` | MongoDB data access + validation for Table Settings (`table_configuration` collection) |
 | `app/blueprints/configuration/pqpr_parser.py` | Excel → JSON parser for PQPR |
@@ -92,7 +92,7 @@ All wrapped in `try/except Exception`, always return valid JSON.
 |---|---|---|
 | GET | `/configuration/table/<int:table_id>/table-settings` | Page render — Audio Settings rows, Expected Client IPs, notification rows, push-notification emails |
 | POST | `/configuration/table/<int:table_id>/table-settings/audio/save` | multipart form: `audio_<slot_id>` (optional file per slot) + `default_<slot_id>` (`enabled`/`disabled`) for all 4 slots → `{success, audio_settings}` |
-| GET | `/configuration/table/<int:table_id>/table-settings/audio/<slot_id>/file` | Serves the stored MP3 for that slot (`audio/mpeg`, inline — used for Preview). 404 if the slot is unknown or has no stored file. |
+| GET | `/configuration/table/<int:table_id>/table-settings/audio/<slot_id>/file` | Serves the stored MP3 for that slot (`audio/mpeg`, inline — used for Preview, and for every detection/kit-advance/red-screen sound on the Live Kitting Activities monitor page). 404 if the slot is unknown or has no stored file. **Now cache-enabled** — see "Audio caching," below. |
 | POST | `/configuration/table/<int:table_id>/table-settings/ips/save` | Body: `{"ips": [...]}` → replaces the whole list → `{success, ips}` |
 | POST | `/configuration/table/<int:table_id>/table-settings/push-notifications/save` | Body: `{"emails": [...], "notifications": {...}}` → `{success, emails, notifications}` |
 
@@ -157,7 +157,7 @@ Mirrors `pqpr_parser.py`'s separation from `routes.py` — no Mongo queries or p
 | `search_kits(collection, table_id, query_text)` | Case-insensitive `$regex` `$or` across `kit_name`, `edp_number`, `parts.part_name`, scoped to this table; empty query falls back to `list_kits` |
 | `get_kit(collection, kit_id, table_id=None)` | Full document by id, for the edit form. If `table_id` given, returns `None` on a cross-table match. |
 | `create_kit(collection, table_id, payload)` | Validates, checks `serial_number` + `edp_number` uniqueness **within this table**, sets `table_id`, inserts |
-| `update_kit(collection, table_id, kit_id, payload)` | Validates the kit belongs to this table first, then checks uniqueness excluding self, `$set`s the document |
+| `update_kit(collection, table_id, kit_id, payload)` | Validates the kit belongs to this table first, then checks uniqueness excluding self, `$set`s the document. **Now returns the normalized data dict it just wrote** (was `None` before this round) — see "Live-activity propagation," below, for why. |
 | `delete_kit(collection, table_id, kit_id)` | Validates the kit belongs to this table first, then deletes by id |
 
 `ValidationError` is raised for any bad input and caught in `routes.py` → turned into a 400 JSON response, never a 500. Uniqueness checks use a generic `_value_taken(collection, field, value, table_id, exclude_object_id=None)` helper, shared by both `serial_number` and `edp_number`, always scoped by `table_id`.
@@ -165,6 +165,78 @@ Mirrors `pqpr_parser.py`'s separation from `routes.py` — no Mongo queries or p
 `_validate_camera_alert_config(payload)` normalizes `camerawise_alert_config` to exactly one entry per camera (`ALLOWED_CAMERAS` order), defaulting a missing camera's entry to `{alert_validation_error: True, alert_wrong_part_error: True}` — so a payload built outside the UI (or an old payload predating this field) still produces a valid, complete document.
 
 The list/search summary shape (`_kit_summary()`) derives `total_parts`, `cam1_count`, `cam2_count`, `total_neglect_parts`, `neglect_cam1_count`, `neglect_cam2_count` from the `parts` / `neglect_parts` arrays at query time — not stored redundantly.
+
+### Live-activity propagation (NEW this round)
+
+`live_activity_details` snapshots `parts`/`neglect_parts`/`camerawise_alert_config`
+from the kit doc **once, at activity creation** (see
+`TSD_LIVE_KITTING_ACTIVITIES.md`) — by original design, so an
+already-running activity is never silently affected by a later,
+unrelated kit edit elsewhere. Client's explicit ask this round reverses
+that for the ONE case where it's actually useful: editing **the exact
+same kit** an activity is already running.
+
+**Two new functions in `current_kits_data.py`:**
+
+```python
+def find_live_activities_for_kit(live_activities_collection, kit_id):
+    """Returns every live_activity_details doc with status="live" whose
+    kit_id matches. Matched by kit_id ALONE (not also table_id) -
+    deliberately, and future-proof even though today's schema (a kit
+    belongs to exactly one table) makes table_id redundant here in
+    practice."""
+
+def update_kit_live_snapshot(live_activities_collection, kit_id, updated_kit_data):
+    """Pushes parts_configured/neglect_parts/camerawise_alert_config
+    from the JUST-UPDATED kit doc onto every matching live activity.
+    updated_kit_data is the SAME dict update_kit() already built and
+    now returns - no second Mongo round trip to re-fetch the kit.
+    Returns the list of updated activity_id strings, so the caller can
+    emit a socket event to each one."""
+```
+
+**`configuration/routes.py`'s `current_kits_update` handler now:**
+1. Calls `update_kit()` (unchanged validation/uniqueness logic), keeping
+   its return value this time.
+2. Calls `update_kit_live_snapshot()` with that return value — a cheap
+   no-op (one `find()` returning zero documents) if nothing is
+   currently live for this kit.
+3. For each activity actually updated, emits `"config:updated"` to that
+   activity's Socket.IO room (`activity:<id>`) — client: "broadcast an
+   update so viewers see new config-driven behavior without
+   refreshing." Payload: `{activity_id, kit_id}`.
+
+**New imports/helpers this required in `configuration/routes.py`:**
+`from app.extensions import socketio` (same shared singleton every
+other blueprint already uses — no new Socket.IO setup needed), plus
+`_live_activities_collection()` and `_room_for_activity()` — the latter
+DUPLICATED from `cv_ingest/routes.py` rather than imported, matching
+this project's established "blueprints stay decoupled, small helpers
+get duplicated rather than cross-imported" convention (both MUST
+produce identical room-name strings for the emit to actually reach
+anyone, so if either copy's format ever changes, change both).
+
+**What does NOT propagate:** Table Settings (Audio Settings, Expected
+Client IPs, Push Notifications) — that snapshot rule is completely
+unchanged, still a pure one-time copy at creation. Only the three
+kit-derived fields above propagate, and only to a LIVE activity running
+that SPECIFIC kit.
+
+**Frontend today:** `monitor.js` has a `config:updated` listener
+(`handleConfigUpdated`) that only `console.log`s the payload — no
+visible element on the monitor page currently mirrors
+`parts_configured`/`camerawise_alert_config` directly, so there's
+nothing to visually update yet. See
+`TSD_LIVE_KITTING_ACTIVITIES.md`'s "Known gaps" for the natural next
+step here (a toast/banner) if wanted.
+
+**Testing note:** verified with mongomock — matching activity's
+snapshot updates correctly, a DIFFERENT kit's activity is untouched, a
+COMPLETED (non-live) activity referencing the same kit is untouched,
+and the zero-live-activities case is a clean no-op. No `array_filters`
+or other mongomock-unsupported operator is involved here, so this path
+IS fully covered by the automated test suite (unlike the red-screen
+feature's `array_filters` gap — see the other TSD's Known Gaps).
 
 ### Frontend
 
@@ -274,6 +346,61 @@ NOTIFICATION_DEFAULT_ENABLED = False  # notification default (opposite of audio)
 
 `data/audio/table_<id>/<slot_id>.mp3` — one file per slot per table, overwrite-only (same convention as PQPR). `_find_stored_audio_path(table_id, slot_id)` checks each allowed extension in turn and returns the first that exists (currently only `.mp3` is allowed, per `storage.audio_allowed_extensions` in `config.yaml`).
 
+### Audio caching (NEW this round)
+
+Reported issue: every detection/kit-advance/red-screen sound on the
+Live Kitting Activities monitor page was re-fetching the MP3 file over
+the network on every single play, for every connected client — the
+route had zero cache headers, so browsers had no way to know the file
+hadn't changed.
+
+`table_settings_audio_file` now calls Flask's `send_file` with two
+additional arguments:
+```python
+return send_file(
+    path,
+    mimetype="audio/mpeg",
+    conditional=True,
+    max_age=3600,
+)
+```
+- **`conditional=True`** turns on Werkzeug's built-in ETag +
+  Last-Modified handling — a client that already has the file (sends a
+  matching `If-None-Match`/`If-Modified-Since`) gets a `304 Not
+  Modified` instead of the audio bytes again.
+- **`max_age=3600`** additionally tells the browser it doesn't even
+  need to make that conditional request for up to an hour —
+  `Cache-Control: public, max-age=3600` on the response. This is what
+  actually eliminates the repeat network round-trips for the common
+  case (the same handful of audio files playing over and over during
+  one activity), not just the conditional-304 saving.
+
+**Cache invalidation is implicit, via the file's own mtime** — the
+audio slot's single-file-per-slot, overwrite-only convention (above)
+means a re-upload changes the file on disk at the exact same path, so
+the next fetch's ETag/Last-Modified naturally differs with zero extra
+bookkeeping needed.
+
+**Trade-off, not yet confirmed with the client:** `max_age=3600` was
+picked without an explicit requirement for the exact number. If an
+operator replaces an audio file mid-shift, an already-open monitor tab
+won't even attempt to re-check for up to an hour — it will keep playing
+the OLD cached file. If the client wants a replace to take effect
+faster, either lower this number or switch to a cache-busting query
+param keyed on the slot's `uploaded_at` timestamp (which would force an
+immediate re-fetch on every replace, at the cost of every OTHER field
+value load also needing that timestamp threaded through to the audio
+URL wherever it's built — currently `cv_ingest/routes.py`'s
+`_audio_url_for()`).
+
+**Tested** with a real Flask test client (not mongomock — this needed
+actual HTTP header behavior, unrelated to MongoDB): first request
+returns `200` with `Cache-Control: public, max-age=3600` and an `ETag`;
+a second request with a matching `If-None-Match` returns `304`. Not
+tested: an actual browser confirming it skips the network entirely on
+a repeat play within the cache window (only the server-side headers
+were verified).
+
 ### Frontend
 
 **`table-settings.js`** has three independent initializers, all wired on `DOMContentLoaded`:
@@ -293,3 +420,4 @@ All three reuse the same `escapeHtml()`/`setStatus()`/`postJson()` helpers at th
 - PQPR storage and Table Settings' audio storage both remain overwrite-only by client's explicit choice.
 - `app/config/loader.py`'s fail-fast validation may not yet cover `configuration.tables` or the `table_configuration` collection name — confirm and extend if desired.
 - Tables 2 and 3 have no Current Kits Configuration, PQPR Analytics, or Table Settings data/routes/templates built — every data-layer function and route here already takes `table_id` as a parameter, so extending to another table is a matter of flipping `built: true` in `config.yaml` and confirming the existing routes work for that table_id (they should, since nothing is Table-1-specific except the one-time PQPR legacy-migration check).
+- **New cross-blueprint dependency this round:** `configuration/routes.py` now imports `from app.extensions import socketio` and reads `mongodb.collections.live_activities` from settings (for the live-activity propagation feature above) — previously this blueprint had zero dependency on Live Kitting Activities' collection or the Socket.IO singleton. Both are the same shared objects every other blueprint already uses, so this doesn't introduce a new subsystem, but it does mean Configuration is no longer fully independent of Live Kitting Activities at the code level (only in the sense of "reads a collection name and emits to a room it doesn't own" — no reverse dependency exists, Live Kitting Activities still knows nothing about Configuration).

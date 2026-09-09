@@ -6,12 +6,16 @@ behavior, see `FRD_LIVE_KITTING_ACTIVITIES.md`.
 
 **Status: fully built and live-tested.** Part counts, the completed/
 pending split, per-camera sound, kit-level timing, camera/activity
-completion, cross-client real-time sync, and (as of this session) the
-full red-screen / error-lock feature — Wrong Part Error and Validation
-Error alert types, per-kit-per-camera master switches, neglected-part
-handling, operator resolution (System Error/Process Error + comment),
-and persistent camera-lock state — are all driven by real events posted
-from the local DeepStream application. This is not a stub.
+completion, cross-client real-time sync, the full red-screen /
+error-lock feature (Wrong Part Error and Validation Error alert types,
+per-kit-per-camera master switches, neglected-part handling, operator
+resolution with System Error/Process Error + comment, persistent
+camera-lock state), a kit-advance confirmation pop-up, live propagation
+of kit-configuration edits to already-running activities, and a
+fresh-from-database "See current settings" modal are all built and
+driven by real events posted from the local DeepStream application.
+This is not a stub. One outstanding config-file gap remains before the
+confirmation pop-up can run — see "Known gaps," below.
 
 ## File map
 
@@ -19,7 +23,8 @@ from the local DeepStream application. This is not a stub.
 app/blueprints/live_kitting_activities/
 ├── __init__.py
 ├── routes.py                    # landing, create flow, monitor page, complete-manually
-└── activities_data.py           # MongoDB data access + validation; monitor view shaping
+└── activities_data.py           # MongoDB data access + validation; monitor view shaping,
+│                                  current-settings-modal view shaping
 
 app/blueprints/cv_ingest/         # detection ingest blueprint, no url_prefix (routes are /api/...)
 ├── __init__.py
@@ -453,10 +458,36 @@ If it's a genuine wrong_part candidate:
 2. If `alert_wrong_part_error` is on for this camera → the camera locks,
    `current_kit_errors_cam{N}` is set, and `error:red` is emitted
    (blocking).
-3. If the switch is off → nothing else happens; the same brief,
-   non-blocking `detection:red` pop-up plays as before this session.
+3. If the switch is off → **corrected this round** — the detection now
+   plays the same GREEN pop-up/sound a matched or neglected detection
+   would (client's correction: "it should give green-pop and sound
+   based on configuration but in database log it has wrong part"). This
+   REVERSED the original build's behavior, which played the brief
+   non-blocking `detection:red` pop-up here — that pop-up path is now
+   effectively dead code for a genuine wrong_part case (kept in
+   `routes.py` only as a defensive fallback branch that should never
+   actually be reached — see "Routes" below).
 
-### Neglected parts — now treated as a green-path outcome
+**Three distinct outcome/display combinations now exist, not two** -
+easy to conflate, so spelled out explicitly:
+
+| | Plays green? | Counted/grouped like a real part? | Locks camera? |
+|---|---|---|---|
+| Matched | Yes | Yes (`part_counts`, real `quantity_required`) | No |
+| Neglected | Yes | Yes (`part_counts`, `quantity_required` forced to 0) | No |
+| Wrong_part, switch OFF | **Yes (this round)** | **No** — individual `wrong_part_cards` entry, never counted | No |
+| Wrong_part, switch ON | No (red-screen) | No — individual `wrong_part_cards` entry, never counted | Yes |
+
+The middle two rows look similar (both green, both this round or
+earlier) but must not be merged in code: a switch-off wrong_part is
+`plays_as_green = True` for DISPLAY purposes only — it must never also
+satisfy `matched or is_neglected` anywhere a counting or grouping
+decision is made. `detection_data.py`'s own in-file comment on
+`plays_as_green` calls this out explicitly; grep that variable name
+before changing either the display logic or the counting logic, since
+the two are computed from overlapping but NOT identical conditions.
+
+### Neglected parts — treated as a green-path outcome
 
 **Client's explicit reversal** of the original design (where a
 neglected part was invisible — never counted, never shown, never
@@ -509,6 +540,22 @@ once the operator resolves via `/api/resolve-error`.
 
 If the switch is off, or no issues were found: `validate_kit` proceeds
 exactly as before this session — unconditional advance.
+
+**Validation image, if sent with this `validate_now` call, is now shown
+on the resulting red-screen** (added a round after the original
+red-screen build): `validate_kit()` accepts an `image_path` parameter
+(the path `routes.py` already saved to disk before calling it — see
+"Kit advance confirmation pop-up" below for the other consumer of this
+same parameter), and stores it directly on the `error_payload`'s
+`image_path` key instead of hardcoding `None`. This is exactly the same
+field `wrong_part`'s red-screen already populated from its own
+detection image — the validation_error case simply wasn't wired to do
+the same until this round. `routes.py`'s `error:red` emit for the
+validation_error branch builds `image_url` from
+`result["error"]["image_path"]` the same way the wrong_part branch
+always has. Persisted on `current_kit_errors_cam{N}` too, so a
+late-joining viewer sees the same image on page load, not just the live
+socket event.
 
 ### Resolving a red-screen — `resolve_error()`
 
@@ -565,6 +612,72 @@ error — by the time this runs, the camera-level `validate` has already
 succeeded and returned 200 to the caller; failing to *also* complete to
 history should never surface as an error on top of that.
 
+## Kit advance confirmation pop-up (NEW - added a round after the initial red-screen build)
+
+Before this round, a clean `validate_kit` call (no Validation Error
+raised) gave zero on-screen feedback — the panel just silently reset.
+Client's report: "on validation, nothing shows... show kit 1 completed,
+next kit 2." Fixed by threading the validation image through
+`validate_kit()` and adding a new confirmation-only Socket.IO event,
+`kit:validated`, emitted **alongside** the existing `kit:advanced` on
+every clean advance.
+
+**`validate_kit()` signature and return changes:**
+- Now accepts `image_path=None` as a third parameter — the path
+  `routes.py`'s `save_detection_image()` already saved to disk BEFORE
+  calling `validate_kit()`, previously computed and then discarded
+  entirely (see the file's own historical docstring note on this, now
+  superseded). Default `None` keeps every existing call site backward
+  compatible without modification.
+- Both the clean-advance return AND the validation_error return now
+  also include `old_kit_index` (the index the camera was ON before this
+  call — trivial for the clean-advance case where it's just
+  `new_kit_index - 1`, but stored explicitly rather than recomputed, so
+  `routes.py` never has to guess) and `image_path` (passed straight
+  through from the parameter).
+
+**`routes.py`'s new emit, clean-advance path only:**
+```
+"kit:validated" → {
+  cam_id, old_kit_index, new_kit_index, is_completed,
+  image_url, audio_url, popup_uptime_sec
+}
+```
+Emitted BEFORE `kit:advanced` (unchanged, still fires immediately
+after) — the underlying panel state resets right away either way
+(`kit:advanced`'s handler is unconditional), `kit:validated` just
+layers a temporary confirmation pop-up on top, using the exact same
+`.detection-popup` element/positioning the green/red pop-ups already
+use, so there is still only ONE popup element per camera to reason
+about on the frontend.
+
+**Two visual variants**, both new CSS/JS (`.detection-popup--blue`,
+`monitor.js`'s `handleKitValidated()`):
+- **Normal** (`is_completed: False`): green, "Kit `<old>` completed |
+  Next: Kit `<new>`", shows `image_url` if the validate call included
+  one. Audio resolved via `resolve_sound_for_detection(activity_doc,
+  cam_id, matched=True)` — reuses the exact green-sound rule a matched
+  detection would use, since there's no dedicated "confirmation sound"
+  concept.
+- **Final** (`is_completed: True` — this camera just finished its LAST
+  kit): a third, distinct **blue** variant (`detection-popup--blue`) —
+  image area is replaced with solid blue + centered text "All kits in
+  Cam`<N>` completed," no image shown even if one was sent (client's
+  explicit spec for this variant is the solid-color+text treatment, not
+  a photo), and **no sound** (not specified by the client, left silent
+  rather than assumed).
+
+**Config addition required** (not yet in `config.yaml`/`loader.py` as
+of this doc's writing — flagged in "Known gaps" below):
+```yaml
+live_kitting:
+  validate_popup_uptime_sec: 3   # separate key, not reusing green_popup_uptime_sec
+```
+`live_kitting_activities/routes.py`'s monitor-page route passes this
+into the template as `validate_popup_uptime_sec`; `monitor.html` exposes
+it via `data-validate-popup-uptime-sec` on `.monitor-page`, same
+`data-*` convention as the existing green/red uptime values.
+
 ## Routes
 
 ### `live_kitting_activities` blueprint
@@ -607,11 +720,13 @@ individual route level.
 | Route | Method | Purpose |
 |---|---|---|
 | `/api/detection-update` | POST (multipart) | One part-detection event from the DeepStream app |
-| `/api/validate-kit` | POST (multipart) | `validate_now` signal — advances one camera's kit index, or raises a Validation Error red-screen instead (NEW this session) |
-| `/api/resolve-error` | POST (JSON) | **NEW this session.** Operator submits `system_error`/`process_error` (+ optional comment) to resolve the active red-screen on one camera — the only way a locked camera reopens |
+| `/api/validate-kit` | POST (multipart) | `validate_now` signal — advances one camera's kit index, or raises a Validation Error red-screen instead |
+| `/api/resolve-error` | POST (JSON) | Operator submits `system_error`/`process_error` (+ optional comment) to resolve the active red-screen on one camera — the only way a locked camera reopens |
 | `/api/toggle-sound` | POST (JSON) | Flips one camera's green-sound toggle on the table's current live activity |
 | `/api/detection-image/<table_dir>/<filename>` | GET | Serves a saved detection frame for the pop-up's `<img>` |
+| `/api/activity-settings/<activity_id>` | GET | **NEW this round.** Powers the "See current settings" modal — see its own section below |
 | (Socket.IO) `join_activity` | — | Client joins the `activity:<id>` room on page load |
+
 
 Same `_get_tables()` / `_get_table()` / `_require_built_table()` /
 `_require_built_table_json()` contract as every other blueprint,
@@ -683,32 +798,56 @@ traceback. See "API error contract" below for the full reason-code list.
 "detection:green" → {
   cam_id, part_name, count, quantity_required, kit_index,
   image_url, detected_at, popup_uptime_sec, audio_url,
-  neglected: bool          # NEW this session - True when this
-                            # detection is a neglected-list match, not
-                            # a real configured part. monitor.js uses
-                            # this to decide whether to build a NEW
-                            # card live (a neglected part has no
-                            # Pending-section placeholder to find and
-                            # flip, unlike a real configured part).
+  neglected: bool,          # True when this detection is a
+                            # neglected-list match, not a real
+                            # configured part.
+  wrong_part: bool,         # NEW this round - True when this is a
+                            # GENUINE wrong_part occurrence (unmatched,
+                            # not neglected) whose alert_wrong_part_error
+                            # switch is OFF for this camera/kit -
+                            # client's correction moved this case from
+                            # detection:red into detection:green. Mutually
+                            # exclusive with "neglected" (matched parts,
+                            # neglected parts, and switch-off wrong_parts
+                            # are three distinct cases, at most one true
+                            # per event - see detection_data.py's own
+                            # comment on plays_as_green vs matched/
+                            # is_neglected for the exact conditions).
+                            # monitor.js branches on these two flags to
+                            # decide whether to build a NEW "Neglected"
+                            # card (grouped/counted) or a NEW "Wrong-part"
+                            # card (individual/uncounted) live - neither
+                            # kind has a Pending-section placeholder to
+                            # find/flip the way a real configured part
+                            # does.
 }
 "detection:red" → {
   cam_id, detected_part, kit_index,
   image_url, detected_at, popup_uptime_sec, audio_url
 }
-# Non-blocking, brief - fires ONLY for a genuine wrong_part occurrence
-# where alert_wrong_part_error is OFF for this camera/kit. A neglected
-# detection NEVER reaches this event anymore (moved to detection:green
-# this session).
+# EFFECTIVELY UNREACHABLE for a genuine wrong_part detection as of this
+# round - switch off now takes the detection:green branch above (with
+# wrong_part: true), and switch on takes the blocking error:red branch
+# below. This branch is kept in routes.py ONLY as a defensive fallback
+# for any future outcome this function doesn't yet classify - if this
+# ever actually fires in production logs, treat it as a bug in
+# record_detection's outcome logic (matched/is_neglected/wrong_part/
+# error), not a legitimate steady-state case. See cv_ingest/routes.py's
+# own comment on this exact branch for the full reasoning.
 
-"error:red" → {          # NEW this session - BLOCKING, no auto-hide
+"error:red" → {          # BLOCKING, no auto-hide
   cam_id,
   error: {error_type, kit_index, issues, image_path, detected_at, ...},
   image_url, audio_url
 }
-# Fires from EITHER record_detection (wrong_part, switch on) or
-# validate_kit (validation_error, switch on + issues found). Stays on
+# Fires from EITHER record_detection (wrong_part, switch ON) or
+# validate_kit (validation_error, switch ON + issues found). Stays on
 # screen until /api/resolve-error succeeds. Red audio LOOPS for this
-# event, unlike detection:red's one-shot playback.
+# event. image_url is now populated for BOTH error types as of this
+# round - validation_error's red-screen previously always sent
+# image_url: null; it now shows the validate_now call's own image, same
+# as wrong_part's red-screen already did (see "Validation Error —
+# checked in validate_kit," above, for the image_path plumbing).
 ```
 
 `audio_url` is `null` when no sound should play for this event — the
@@ -838,6 +977,87 @@ Serves a saved detection frame. Path shape mirrors exactly what
 `save_detection_image()` returns (e.g. `table_1/ab12cd34.jpg`) — a
 two-segment route rather than a wildcard, to avoid directory-traversal
 ambiguity.
+
+#### `GET /api/activity-settings/<activity_id>` (NEW this round)
+
+Powers the monitor page's "See current settings" button — previously a
+dead placeholder. Client's explicit requirements, all satisfied by this
+route's design:
+- **Fresh from MongoDB on EVERY call** — a plain `find_one({"_id":
+  ObjectId(activity_id)})` right in the route handler, no caching layer
+  anywhere in this path. The button's click handler in `monitor.js`
+  calls this endpoint every single time it's opened, never reusing a
+  previous response.
+- **Reads the LIVE ACTIVITY's own snapshot fields**
+  (`parts_configured`, `neglect_parts`, `camerawise_alert_config`) —
+  client: "dont load from configuration table, load whats in current
+  activity." Never touches `current_kit_configurations` (the kit's
+  master config doc) at all. This is precisely why the config-
+  propagation feature (see "Editing a kit while it's running" in the
+  FRD, and `TSD_CONFIGURATION.md`'s own new section) matters here: once
+  a kit edit propagates to a live activity's snapshot, this modal's
+  next open immediately reflects it, with zero code path needing to
+  know propagation happened — it just reads whatever is on the
+  document right now.
+- **Includes runtime state, not just static config** — client: "Yes,
+  also show camera_state, current_kit_index, sound toggle state, etc."
+
+**Response shape** (via
+`live_kitting_activities/activities_data.build_current_settings_view()`
+— a pure shaping function, no DB access of its own, same separation as
+`build_monitor_view`):
+```json
+{
+  "success": true,
+  "settings": {
+    "activity_id": "...", "table_id": 1, "table_name": "...",
+    "kit_name": "...", "edp_number": "...", "order_number": "...",
+    "quantity_required": 5, "status": "live",
+    "cam1": {
+      "current_kit_index": 3,
+      "camera_state": "open" | "locked",
+      "green_sound_enabled": true,
+      "parts": [
+        {"part_name": "...", "quantity_required": 2,
+         "alert_missing": true, "alert_undercount": false, "alert_overcount": true}
+      ],
+      "neglect_parts": [{"part_name": "..."}],
+      "camera_alert_config": {"alert_validation_error": true, "alert_wrong_part_error": false}
+    },
+    "cam2": { "...": "..." }
+  }
+}
+```
+
+**Error responses:** `400` for a malformed `activity_id` (not a valid
+`ObjectId`), `404` if no document matches, `500` on `PyMongoError` — all
+still valid JSON (`{"success": false, "error": "..."}`), same contract
+as every other route in this app.
+
+**Why this route lives in `cv_ingest`, not `live_kitting_activities`:**
+it reads the exact same collection/document shape every other
+`cv_ingest` route already owns, and no `url_prefix` conflict exists
+(same `/api/...` convention). `activities_data.py` — the actual
+data-shaping module — still lives in `live_kitting_activities`, and
+`cv_ingest/routes.py` imports `build_current_settings_view` from it
+directly. This is a deliberate, narrow exception to this project's
+"blueprints stay decoupled, duplicate small helpers rather than
+cross-import" convention (see `_room_for_activity`'s own duplication
+for the general rule) — importing one pure data-shaping FUNCTION is not
+the same as duplicating ROUTE logic, and re-deriving the same shaping
+logic a second time in a different module would be strictly worse.
+
+**Frontend (`monitor.js`, `monitor.html`, `monitor.css`):** a modal
+(`.settings-modal-backdrop` / `.settings-modal`), not a new page —
+client's explicit call. Closeable via an X button, clicking the
+backdrop, or Escape. Content is built entirely client-side from the
+fetch response (`renderSettingsContent()` in `monitor.js`) — grouped
+sections per the client's spec (Kit info → Parts per camera → Neglect
+list per camera → Camera Alert Configuration per camera). All
+interpolated text goes through a minimal `escapeHtml()` helper before
+being placed in `innerHTML` — part/kit names ultimately come from
+operator-typed data in Current Kits Configuration, so this is treated
+as untrusted input even on an internal on-prem tool.
 
 ## API error contract
 
@@ -1225,46 +1445,76 @@ confirmed no queueing/buffering fix is needed for now.
 
 ## Known gaps / next-session TODO
 
+- **`live_kitting.validate_popup_uptime_sec` is NOT yet added to
+  `config.yaml`/`app/config/loader.py`** — the kit-advance confirmation
+  pop-up (see its own section above) reads this key via
+  `current_app.config["SETTINGS"]["live_kitting"]["validate_popup_uptime_sec"]`,
+  which will raise a `KeyError` until the config file and the loader's
+  fail-fast validation list are both updated. This is the single most
+  important gap to close before that feature can run at all — flagged
+  at delivery time but not yet confirmed done.
 - **`array_filters` (used by `resolve_error()` to badge the correct
   `wrong_part_cards` entry) is untestable with this project's mongomock
-  suite** — mongomock does not implement it (confirmed this session,
-  not a MongoDB limitation). Logic was reviewed manually and the query
-  shape validated as well-formed, but this specific write path has not
-  been exercised against a real MongoDB instance. Verify here first if
-  a reported bug involves the S/P badge not appearing on the right
-  card.
+  suite** — mongomock does not implement it (not a MongoDB limitation).
+  Logic was reviewed manually and the query shape validated as
+  well-formed, but this specific write path has not been exercised
+  against a real MongoDB instance. Verify here first if a reported bug
+  involves the S/P badge not appearing on the right card.
 - **No per-kit timer breakdown UI** beyond the live monitor page — the
   data (`detections.<cam>.<kit>.timing`, every individual event's own
-  `created_at`, and now every alert raised + how it was resolved) is
-  fully captured for analytics, but there's no History viewer built yet
-  to browse it.
-- **"See current settings" and "History" buttons** are still unwired
-  placeholders.
+  `created_at`, and every alert raised + how it was resolved) is fully
+  captured for analytics, but there's no History viewer built yet to
+  browse it.
+- **"History" button** is still an unwired placeholder. ("See current
+  settings" is now fully built — see its own section above; do not
+  confuse the two, they used to be grouped together in this list.)
 - **`table_settings` snapshot only partially consumed** — only
   `audio_settings` (for sound) is read anywhere right now.
   `expected_client_ips` and `push_notifications` are captured at
-  creation time but not yet used by any code path.
+  creation time but not yet used by any code path. Note this snapshot
+  is explicitly NOT affected by the new kit-config propagation feature
+  (see "Editing a kit while it's running" in the FRD) — only
+  kit-derived fields propagate; Table Settings stays a pure one-time
+  snapshot.
 - **`detections.<cam>.<kit>.validation` is reserved but unpopulated** —
-  `/api/validate-kit` accepts an image but currently discards it after
-  saving to disk; a future build should write validation detail here.
-  (Not to be confused with the new `validation_error` *alert type* or
-  the `errors` array — this reserved key is still specifically about
-  storing what the kit looked like/whether it passed at validation
-  time, a separate concern.)
+  `/api/validate-kit` accepts an image and, as of the confirmation
+  pop-up work, now actually USES it (shown on the pop-up, and on a
+  validation_error red-screen), but still doesn't write anything to
+  this specific reserved key. Not to be confused with either of those
+  two consumers — this key was always meant for a more detailed
+  "did this kit pass validation" record, still a separate, still-
+  deferred concern.
 - **Audio playback not verified with real MP3 files in a real
   (non-headless) browser** by this project's own automated testing —
   testing used placeholder non-decodable audio bytes and a headless
   browser; URL resolution and toggle/loop logic are fully verified,
-  actual audible output was confirmed manually by the client during
-  this session (see "Sound system" debugging note, above) but not by
-  an automated test.
+  actual audible output has been confirmed manually by the client
+  during this build (see "Sound system" debugging note, above) but not
+  by an automated test.
+- **Audio caching's `max_age=3600` (1 hour) was picked without an
+  explicit client requirement** — see `TSD_CONFIGURATION.md`'s new
+  audio-caching section for the exact mechanism. If an operator
+  replaces an audio file mid-shift, an already-open monitor tab
+  browser-caches the OLD file for up to an hour before even checking
+  for a new one. Revisit this number, or add a cache-busting query
+  param keyed on the file's `uploaded_at`, if the client wants a
+  replace to take effect faster than that.
+- **`config:updated` (the socket event for live kit-config propagation)
+  has no visible UI effect on the monitor page today** — it's
+  console-logged only (`monitor.js`'s `handleConfigUpdated`). This is
+  intentional for now (no element on the page currently mirrors
+  `parts_configured`/`camerawise_alert_config` directly — the "See
+  current settings" modal is the actual way to view current config, and
+  it always fetches fresh on open regardless of whether this event
+  fired), but is the natural hook point if a future build wants a
+  toast/banner confirming the change without opening the modal.
 - Camera-check images are still fixed static placeholders.
 - No rate-limiting on the ingest endpoints.
 - No authentication/authorization layer anywhere in the app.
 - **No real-MongoDB integration test exists in this project at all** —
-  every automated test in this build (including this session's 76
-  assertions across two suites) runs against mongomock. This has been
-  sufficient so far but `array_filters` (above) is the first concrete
-  case where that choice left a real gap; worth considering a
-  real-MongoDB (or `mongomock`-alternative) test tier if more
-  MongoDB-version-specific features get used going forward.
+  every automated test runs against mongomock (90+ assertions across
+  the red-screen/neglect/config-propagation suites as of this round).
+  This has been sufficient so far but `array_filters` (above) is the
+  clearest concrete case where that choice leaves a real gap; worth
+  considering a real-MongoDB (or `mongomock`-alternative) test tier if
+  more MongoDB-version-specific features get used going forward.
