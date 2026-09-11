@@ -80,6 +80,18 @@
   cursor: pointer;
 }
 
+/* NEW this round - the "Disabled" radio for a red-audio row (client:
+   "keep red audio enabled by default and remove option to disable...
+   show both radio buttons for them, choose enabled but user cant
+   change to disable"). The input itself already carries the disabled
+   attribute (see table_settings.html); this just greys out the whole
+   label so it visually reads as locked/unavailable rather than looking
+   like a normal, just-currently-unchecked option. */
+.radio-option--locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .table-settings__actions {
   display: flex;
   gap: var(--spacing-sm);

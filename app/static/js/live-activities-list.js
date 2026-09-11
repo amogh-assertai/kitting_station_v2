@@ -51,7 +51,18 @@ function formatLocalStartTime(isoString) {
   const date = new Date(isoString);
   if (isNaN(date.getTime())) return "Started —";
 
-  const timePart = date.toLocaleTimeString(undefined, {
+  // NEW this round - client's ask: "we show only Started 8:50 pm...
+  // lets show date as well." Full format with year, per client's
+  // explicit example ("Sep 9, 2026, 8:50 PM") - date and time are
+  // formatted TOGETHER via toLocaleString rather than concatenating
+  // two separately-formatted strings, so locale-specific ordering/
+  // punctuation (e.g. a non-US locale that puts the day before the
+  // month) is handled correctly by the browser's own Intl
+  // implementation rather than a hardcoded template.
+  const dateTimePart = date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
@@ -59,7 +70,7 @@ function formatLocalStartTime(isoString) {
 
   const tzPart = getTimezoneLabel(date);
 
-  return tzPart ? `Started ${timePart} ${tzPart}` : `Started ${timePart}`;
+  return tzPart ? `Started ${dateTimePart} ${tzPart}` : `Started ${dateTimePart}`;
 }
 
 document.addEventListener("DOMContentLoaded", () => {

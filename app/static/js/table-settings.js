@@ -114,8 +114,18 @@
 
       table.querySelectorAll("tbody tr").forEach(function (row) {
         const slotId = row.dataset.slotId;
+        // NEW this round - red audio slots are hardcoded to "enabled"
+        // regardless of DOM radio state (client's ask: no way to
+        // disable red audio). The template already renders both red
+        // radios as disabled+Enabled-checked (see table_settings.html),
+        // and a disabled-but-checked radio DOES still report correctly
+        // via the :checked selector below - but this explicit check
+        // makes the actual RULE (red is always enabled) independent of
+        // that DOM detail, so a future template change can't silently
+        // reintroduce a way to save red as disabled.
+        const isRedSlot = slotId === "camera_1_red" || slotId === "camera_2_red";
         const checked = row.querySelector('input[name="default-' + slotId + '"]:checked');
-        formData.append("default_" + slotId, checked ? checked.value : "enabled");
+        formData.append("default_" + slotId, isRedSlot ? "enabled" : (checked ? checked.value : "enabled"));
         if (pendingFiles[slotId]) {
           formData.append("audio_" + slotId, pendingFiles[slotId]);
         }

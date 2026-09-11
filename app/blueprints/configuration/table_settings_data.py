@@ -49,6 +49,16 @@ AUDIO_SLOTS = [
 
 _AUDIO_SLOT_IDS = {slot["id"] for slot in AUDIO_SLOTS}
 
+# NEW this round - red audio slots (client's explicit ask: "keep red
+# audio enabled by default and remove option to disable for both
+# camera"). Enforced HERE, server-side, not just in the template's
+# disabled radio inputs - a crafted POST bypassing the UI entirely must
+# not be able to actually disable red audio. table-settings.js also
+# hardcodes "enabled" for these two slots before ever building its
+# request, so this is defense-in-depth, not the only place the rule
+# lives.
+_RED_AUDIO_SLOT_IDS = {"camera_1_red", "camera_2_red"}
+
 # Assumption: an audio slot with no default set yet (brand new table)
 # defaults to Enabled.
 DEFAULT_ENABLED = True
@@ -132,7 +142,13 @@ def save_audio_settings(collection, table_id, slot_updates):
             current["original_filename"] = file_info["original_filename"]
             current["stored_filename"] = file_info["stored_filename"]
             current["uploaded_at"] = _now_iso()
-        current["default_enabled"] = bool(update.get("default_enabled", DEFAULT_ENABLED))
+        if slot_id in _RED_AUDIO_SLOT_IDS:
+            # Server-side enforcement of the "red is always enabled"
+            # rule - ignores whatever default_enabled value was
+            # actually submitted for these two slots.
+            current["default_enabled"] = True
+        else:
+            current["default_enabled"] = bool(update.get("default_enabled", DEFAULT_ENABLED))
         audio_settings[slot_id] = current
 
     now = _now_iso()
@@ -265,3 +281,82 @@ def save_push_notifications(collection, table_id, emails, notifications):
         upsert=True,
     )
     return {"emails": cleaned_emails, "notifications": normalized_notifications}
+
+
+# ---------------------------------------------------------------------------
+# Live-activity propagation (NEW this round)
+#
+# live_activity_details snapshots table_settings (audio_settings,
+# expected_client_ips, push_notification_emails, push_notifications) ONCE,
+# at activity creation - by design, matching the same one-time-snapshot
+# rule the kit-config fields (parts_configured/neglect_parts/
+# camerawise_alert_config) originally had, and which was already reversed
+# for THOSE fields in current_kits_data.py's find_live_activities_for_kit/
+# update_kit_live_snapshot. Client's ask this round: the same reversal for
+# Table Settings too.
+#
+# Scoping differs from the kit-config case, deliberately: Table Settings
+# belongs to a TABLE, not a specific kit, so this matches by table_id, not
+# kit_id. The FRD's "only one live activity per table" rule means this
+# will touch at most one document today, but the query itself doesn't
+# hardcode that assumption (same reasoning as
+# current_kits_data.find_live_activities_for_kit's own docstring on
+# staying correct even if that constraint ever loosens).
+# ---------------------------------------------------------------------------
+
+def find_live_activities_for_table(live_activities_collection, table_id):
+    """Returns every live_activity_details document currently
+    status="live" for this table_id. See module docstring above for why
+    this is table-scoped rather than kit-scoped."""
+    return list(
+        live_activities_collection.find({"table_id": table_id, "status": "live"})
+    )
+
+
+def update_table_settings_live_snapshot(live_activities_collection, table_id, table_config_doc):
+    """Pushes the JUST-UPDATED table_configuration document's
+    audio_settings/expected_client_ips/push_notification_emails/
+    push_notifications onto every live activity for this table, nested
+    under that activity's own "table_settings" key - the exact same
+    shape create_live_activity() builds at creation time, so a viewer
+    reading the activity doc afterward (e.g. the "See current settings"
+    modal) sees no structural difference between a snapshot taken at
+    creation and one updated by this propagation.
+
+    table_config_doc is the FULL table_configuration document (as
+    returned by get_table_config(), or read directly by the caller) -
+    the three save_* functions in this module each only update PART of
+    this document, so the caller is responsible for passing the
+    up-to-date FULL document after whichever section was just saved,
+    not just the fields that one save touched. This keeps this
+    function's job simple (copy four known keys verbatim) rather than
+    needing three different partial-update variants.
+
+    Returns the list of activity_id strings that were actually updated,
+    so the caller can emit a "config:updated" socket event to each one -
+    reuses the SAME event name current_kits_data's kit-config
+    propagation already uses (monitor.js's existing handleConfigUpdated
+    listener needs no changes to also react to this).
+    """
+    activities = find_live_activities_for_table(live_activities_collection, table_id)
+    if not activities:
+        return []
+
+    now = _now_iso()
+    updated_activity_ids = []
+    for activity in activities:
+        live_activities_collection.update_one(
+            {"_id": activity["_id"]},
+            {
+                "$set": {
+                    "table_settings.audio_settings": table_config_doc.get("audio_settings", {}),
+                    "table_settings.expected_client_ips": table_config_doc.get("expected_client_ips", []),
+                    "table_settings.push_notification_emails": table_config_doc.get("push_notification_emails", []),
+                    "table_settings.push_notifications": table_config_doc.get("push_notifications", {}),
+                    "updated_at": now,
+                }
+            },
+        )
+        updated_activity_ids.append(str(activity["_id"]))
+
+    return updated_activity_ids

@@ -708,6 +708,36 @@ def build_current_settings_view(doc):
             "camera_alert_config": _camera_alert_config_for(camera),
         }
 
+    def _table_settings_view():
+        """NEW this round - client's ask: the settings modal should
+        also show the Table Settings snapshot (Audio Settings, Expected
+        Client IPs, Push Notifications) captured on THIS activity at
+        creation time - "that as would have copied to live activity so
+        show table settings as well." Reads doc["table_settings"]
+        exactly as create_live_activity() put it there - a one-time
+        snapshot, unaffected by the kit-config propagation feature
+        (which only touches parts_configured/neglect_parts/
+        camerawise_alert_config, never table_settings). Missing/empty
+        table_settings (should not normally happen, since it's always
+        set at creation) degrades to an empty-but-shaped skeleton rather
+        than raising, matching this project's general "never crash the
+        page over a missing optional field" convention."""
+        table_settings = doc.get("table_settings") or {}
+        audio_settings = table_settings.get("audio_settings", {})
+
+        return {
+            "audio_settings": {
+                slot_id: {
+                    "original_filename": slot.get("original_filename"),
+                    "default_enabled": bool(slot.get("default_enabled", True)),
+                }
+                for slot_id, slot in audio_settings.items()
+            },
+            "expected_client_ips": list(table_settings.get("expected_client_ips", [])),
+            "push_notification_emails": list(table_settings.get("push_notification_emails", [])),
+            "push_notifications": dict(table_settings.get("push_notifications", {})),
+        }
+
     return {
         "activity_id": str(doc["_id"]),
         "table_id": doc.get("table_id"),
@@ -719,6 +749,7 @@ def build_current_settings_view(doc):
         "status": doc.get("status"),
         "cam1": _camera_block("cam1"),
         "cam2": _camera_block("cam2"),
+        "table_settings": _table_settings_view(),
     }
 
 def complete_activity_manually(activities_collection, history_collection, activity_id, reason):

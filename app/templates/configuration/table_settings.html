@@ -54,12 +54,44 @@
             <audio id="audio-player-{{ row.id }}" preload="none"></audio>
           </td>
           <td>
-            <label class="radio-option">
-              <input type="radio" name="default-{{ row.id }}" value="enabled" {% if row.default_enabled %}checked{% endif %}> Enabled
-            </label>
-            <label class="radio-option">
-              <input type="radio" name="default-{{ row.id }}" value="disabled" {% if not row.default_enabled %}checked{% endif %}> Disabled
-            </label>
+            {% if row.id in ('camera_1_red', 'camera_2_red') %}
+              <!-- NEW this round - client's explicit ask: red audio
+                   stays Enabled by default, with no way to disable it.
+                   Both radios are still SHOWN (client: "show both radio
+                   buttons for them") so the row's visual shape matches
+                   every other row, but the Disabled option is rendered
+                   non-interactive (disabled attribute, greyed out via
+                   CSS) and Enabled is forced checked regardless of
+                   whatever default_enabled happens to already be
+                   stored - a red slot's stored value should always be
+                   True going forward (see table_settings_data.py's own
+                   note on this), but this template-level lock is the
+                   actual enforcement the user sees and cannot bypass
+                   from this page, independent of what's in the
+                   database. -->
+              <label class="radio-option">
+                <input type="radio" name="default-{{ row.id }}" value="enabled" checked disabled> Enabled
+              </label>
+              <label class="radio-option radio-option--locked">
+                <input type="radio" name="default-{{ row.id }}" value="disabled" disabled> Disabled
+              </label>
+              <!-- A disabled radio input is NOT submitted as part of
+                   any form data collection that reads it via a
+                   querySelector on name/checked state the way
+                   table-settings.js's saveBtn handler does - see the
+                   accompanying table-settings.js change, which reads
+                   this row's value as a hardcoded "enabled" rather
+                   than querying the (disabled, so unreliable to rely
+                   on browsers treating consistently) DOM radio state
+                   for red rows specifically. -->
+            {% else %}
+              <label class="radio-option">
+                <input type="radio" name="default-{{ row.id }}" value="enabled" {% if row.default_enabled %}checked{% endif %}> Enabled
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="default-{{ row.id }}" value="disabled" {% if not row.default_enabled %}checked{% endif %}> Disabled
+              </label>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}

@@ -197,7 +197,17 @@ function findCameraPanel(camId) {
 }
 
 function findPartCard(panel, partName) {
-  return panel.querySelector(`.part-card[data-part-name="${CSS.escape(partName)}"]`);
+  // FIX (this round) - excludes .part-card--wrong_part explicitly.
+  // wrong_part cards ALSO carry a data-part-name attribute (for
+  // display purposes), but they are individual/uncounted by design -
+  // never meant to be "found and updated" the way a real configured
+  // part or a grouped neglected-part card is. Without this exclusion,
+  // a SECOND wrong_part hit for the same part name would match the
+  // FIRST wrong_part card here and incorrectly re-tag/reuse it instead
+  // of createWrongPartCard() making a fresh individual card (client
+  // report: repeat wrong-part hits were "tagging the same red card as
+  // last detected" instead of creating new ones).
+  return panel.querySelector(`.part-card[data-part-name="${CSS.escape(partName)}"]:not(.part-card--wrong_part)`);
 }
 
 function updateSectionCounts(panel) {
@@ -273,20 +283,32 @@ function handleGreenDetection(payload) {
     // duplicate.
     createNeglectedCard(panel, payload);
   } else if (payload.wrong_part) {
-    // NEW this round - a genuine wrong_part detection where
-    // alert_wrong_part_error is OFF for this camera/kit now ALSO plays
-    // green (client's correction), but unlike neglected it is NEVER
-    // grouped/counted - same createWrongPartCard() used by the
-    // non-blocking detection:red path and the blocking error:red path,
-    // so all three wrong_part entry points produce an identical
-    // INDIVIDUAL card, just reached via a different pop-up color this
-    // time. No resolutionCode yet - a switch-off wrong_part is never
-    // gated behind a red-screen, so there is no operator resolution to
-    // show a badge for.
-    createWrongPartCard(panel, {
+    // A genuine wrong_part detection where alert_wrong_part_error is
+    // OFF for this camera/kit plays green (client's earlier
+    // correction), but unlike neglected it is NEVER grouped/counted -
+    // createWrongPartCard() always makes a FRESH individual card, one
+    // per occurrence, even for a repeated part name (client: "we need
+    // new card as its like when wrong part alert is enabled" - i.e.
+    // this must behave exactly like the blocking-red-screen wrong_part
+    // path already does, one card per hit, no reuse).
+    //
+    // The newest card IS tagged "Last detected" (client's explicit
+    // call this round, so a switch-off wrong_part behaves like a
+    // real/neglected part in that one respect) - clearLastDetectedBadges()
+    // at the top of this function already stripped the badge from
+    // every other card on this panel, so appending it fresh here keeps
+    // the "exactly one badge at a time" invariant intact.
+    const wrapper = createWrongPartCard(panel, {
       partName: payload.part_name,
       resolutionCode: null,
     });
+    const newCard = wrapper.querySelector('.part-card');
+    if (newCard) {
+      const badge = document.createElement('span');
+      badge.className = 'part-card__badge';
+      badge.textContent = 'Last detected';
+      newCard.appendChild(badge);
+    }
   } else {
     console.warn('detection:green for a part not found on this panel - part configuration may have changed mid-activity.', payload);
   }
@@ -474,10 +496,18 @@ const _errorAudioRegistry = new Map(); // camId -> HTMLAudioElement
  * no required/found numbers, so it renders as just the part name.
  */
 function formatIssueLine(issue) {
+  // Format per client's exact spec (this round):
+  //   missing:    "Missing Component: <name>| Required: 1 | Found: 0."
+  //   undercount/overcount: "<name> | Required: <n> | Found: <n>" (no
+  //     "Missing Component:" prefix - that prefix is specific to the
+  //     missing case only, per the client's own two examples).
   if (issue.issue === 'unrecognized') {
     return `Detected: ${issue.part_name} (unrecognized part)`;
   }
-  return `${issue.part_name} required ${issue.required} found ${issue.found} (${issue.issue})`;
+  if (issue.issue === 'missing') {
+    return `Missing Component: ${issue.part_name}| Required: ${issue.required} | Found: ${issue.found}.`;
+  }
+  return `${issue.part_name} | Required: ${issue.required} | Found: ${issue.found}`;
 }
 
 /**
@@ -779,7 +809,109 @@ function renderSettingsContent(settings) {
 
   const cameraBlocks = ['cam1', 'cam2'].map((camId) => renderCameraSettingsBlock(camId, settings[camId])).join('');
 
-  return kitInfoHtml + cameraBlocks;
+  // NEW this round - client's ask: "in see current settings buttons,
+  // we also need to show table configuration also" - confirmed to mean
+  // the Table Settings snapshot (Audio Settings, Expected Client IPs,
+  // Push Notifications) captured on THIS activity at creation, same
+  // data build_current_settings_view() now returns under
+  // settings.table_settings. Rendered as its OWN section, after the
+  // per-camera blocks, since it's table-level rather than per-camera.
+  const tableSettingsHtml = renderTableSettingsBlock(settings.table_settings);
+
+  return kitInfoHtml + cameraBlocks + tableSettingsHtml;
+}
+
+/**
+ * Renders the Table Settings section - Audio Settings (one row per
+ * slot), Expected Client IPs, and Push Notifications (emails +
+ * per-type enabled/disabled, with threshold % where applicable). Same
+ * escapeHtml() discipline as the rest of this modal - every value here
+ * ultimately originates from operator input in Configuration -> Table
+ * Settings.
+ */
+function renderTableSettingsBlock(tableSettings) {
+  if (!tableSettings) return '';
+
+  const audioSlotLabels = {
+    camera_1_green: 'Camera 1 — Green Audio',
+    camera_1_red: 'Camera 1 — Red Audio',
+    camera_2_green: 'Camera 2 — Green Audio',
+    camera_2_red: 'Camera 2 — Red Audio',
+  };
+
+  const audioRows = Object.keys(audioSlotLabels).map((slotId) => {
+    const slot = tableSettings.audio_settings[slotId] || {};
+    const filename = slot.original_filename || 'No file uploaded';
+    const enabled = slot.default_enabled !== false;
+    return `
+      <tr>
+        <td>${escapeHtml(audioSlotLabels[slotId])}</td>
+        <td>${escapeHtml(filename)}</td>
+        <td>${enabled ? 'Enabled' : 'Disabled'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const audioHtml = `
+    <table class="settings-table">
+      <thead><tr><th>Audio</th><th>File</th><th>Default</th></tr></thead>
+      <tbody>${audioRows}</tbody>
+    </table>
+  `;
+
+  const ipRows = tableSettings.expected_client_ips.length
+    ? tableSettings.expected_client_ips.map((ip) => `<li>${escapeHtml(ip)}</li>`).join('')
+    : '<li class="settings-list__empty">None configured</li>';
+
+  const ipsHtml = `<ul class="settings-list">${ipRows}</ul>`;
+
+  const emailRows = tableSettings.push_notification_emails.length
+    ? tableSettings.push_notification_emails.map((email) => `<li>${escapeHtml(email)}</li>`).join('')
+    : '<li class="settings-list__empty">None configured</li>';
+
+  const emailsHtml = `<ul class="settings-list">${emailRows}</ul>`;
+
+  const notificationLabels = {
+    start_stop_events_notification: 'Start/Stop Events Notification',
+    error_rate_threshold_notification: 'Error Rate Threshold Notification',
+    continuous_object_detected_notification: 'Continuous Object Detected Notification',
+    activity_creation_error_notification: 'Activity Creation Error Notification',
+  };
+
+  const notificationRows = Object.keys(notificationLabels).map((notifId) => {
+    const entry = tableSettings.push_notifications[notifId] || {};
+    const enabled = Boolean(entry.enabled);
+    const thresholdText = notifId === 'error_rate_threshold_notification' && entry.threshold_percent != null
+      ? ` (${escapeHtml(entry.threshold_percent)}%)`
+      : '';
+    return `
+      <tr>
+        <td>${escapeHtml(notificationLabels[notifId])}</td>
+        <td>${enabled ? 'Enabled' : 'Disabled'}${thresholdText}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const notificationsHtml = `
+    <table class="settings-table">
+      <thead><tr><th>Notification</th><th>Status</th></tr></thead>
+      <tbody>${notificationRows}</tbody>
+    </table>
+  `;
+
+  return `
+    <div class="settings-section">
+      <h3 class="settings-section__title">Table Settings</h3>
+      <h4 class="settings-subsection__title">Audio Settings</h4>
+      ${audioHtml}
+      <h4 class="settings-subsection__title">Expected Client IPs</h4>
+      ${ipsHtml}
+      <h4 class="settings-subsection__title">Push Notification Emails</h4>
+      ${emailsHtml}
+      <h4 class="settings-subsection__title">Push Notification Types</h4>
+      ${notificationsHtml}
+    </div>
+  `;
 }
 
 function renderCameraSettingsBlock(camId, cam) {

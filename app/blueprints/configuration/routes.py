@@ -767,6 +767,25 @@ def table_settings_audio_save(table_id):
         audio_settings = table_settings_data.save_audio_settings(
             _table_config_collection(), table_id, slot_updates
         )
+
+        # NEW this round - client's ask: propagate Table Settings edits
+        # to any live activity on this table too, same as the earlier
+        # kit-config propagation. Re-fetches the FULL table_configuration
+        # doc (not just audio_settings) since
+        # update_table_settings_live_snapshot() writes all four
+        # sub-keys together - cheap, and keeps that function's job
+        # simple (see its own docstring).
+        table_config_doc = table_settings_data.get_table_config(_table_config_collection(), table_id)
+        updated_activity_ids = table_settings_data.update_table_settings_live_snapshot(
+            _live_activities_collection(), table_id, table_config_doc
+        )
+        for activity_id in updated_activity_ids:
+            socketio.emit(
+                "config:updated",
+                {"activity_id": activity_id, "table_id": table_id},
+                room=_room_for_activity(activity_id),
+            )
+
         return jsonify({"success": True, "audio_settings": audio_settings})
     except table_settings_data.ValidationError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
@@ -841,6 +860,19 @@ def table_settings_ips_save(table_id):
         saved = table_settings_data.save_expected_ips(
             _table_config_collection(), table_id, ips
         )
+
+        # NEW this round - same propagation as Audio Settings, above.
+        table_config_doc = table_settings_data.get_table_config(_table_config_collection(), table_id)
+        updated_activity_ids = table_settings_data.update_table_settings_live_snapshot(
+            _live_activities_collection(), table_id, table_config_doc
+        )
+        for activity_id in updated_activity_ids:
+            socketio.emit(
+                "config:updated",
+                {"activity_id": activity_id, "table_id": table_id},
+                room=_room_for_activity(activity_id),
+            )
+
         return jsonify({"success": True, "ips": saved})
     except PyMongoError:
         current_app.logger.exception("table_settings_ips_save failed")
@@ -871,6 +903,19 @@ def table_settings_push_notifications_save(table_id):
         result = table_settings_data.save_push_notifications(
             _table_config_collection(), table_id, emails, notifications
         )
+
+        # NEW this round - same propagation as Audio Settings, above.
+        table_config_doc = table_settings_data.get_table_config(_table_config_collection(), table_id)
+        updated_activity_ids = table_settings_data.update_table_settings_live_snapshot(
+            _live_activities_collection(), table_id, table_config_doc
+        )
+        for activity_id in updated_activity_ids:
+            socketio.emit(
+                "config:updated",
+                {"activity_id": activity_id, "table_id": table_id},
+                room=_room_for_activity(activity_id),
+            )
+
         return jsonify({"success": True, "emails": result["emails"], "notifications": result["notifications"]})
     except table_settings_data.ValidationError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
