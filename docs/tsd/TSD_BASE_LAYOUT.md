@@ -38,6 +38,17 @@ body { display: flex; flex-direction: column; }
 ```
 `min-height: 0` is required for the flex child to actually scroll instead of overflowing. This means **no page ever needs its own scroll CSS** — any page's content that overflows scrolls inside `.app-main` automatically.
 
+### Content column width — 1440px (widened this session)
+
+`.app-header__inner`, `.app-main`, and `.app-footer__inner` each carry
+`max-width: 1440px; margin: 0 auto` — was `1200px`. Widened 20% (client
+had extra unused space on both sides at fixed-monitor resolutions) — all
+three rules were changed together, identically, so header/main/footer
+stay visually aligned as one column rather than drifting apart. This is
+a **global change** — every page uses the same shell, so this affects
+Home, Live Kitting Activities, History, and Configuration all at once,
+not a per-page setting.
+
 ## Back button + table badge (implementation)
 
 **Markup** — rendered once, globally, in `base.html`, with the Back button and an empty `{% block table_badge %}` wrapped in a flex row:

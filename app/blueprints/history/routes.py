@@ -103,9 +103,17 @@ def index():
 def delete(activity_id):
     """AJAX: -> {success} or {success: false, error}. Permanent delete -
     no soft-delete/archive, matching History's confirmed read-only +
-    delete scope."""
+    delete scope. Also removes the activity's saved detection images
+    from disk (both cameras, all kit indices) - see
+    history_data.delete_activity's own docstring."""
+    settings = current_app.config["SETTINGS"]["live_kitting"]
     try:
-        history_data.delete_activity(_activity_history_collection(), activity_id)
+        history_data.delete_activity(
+            _activity_history_collection(),
+            activity_id,
+            images_base_dir=current_app.config["BASE_DIR"],
+            detection_image_dir=settings["detection_image_dir"],
+        )
     except history_data.ValidationError as exc:
         return jsonify(success=False, error=str(exc)), 400
     except PyMongoError:

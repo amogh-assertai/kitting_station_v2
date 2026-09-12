@@ -1,43 +1,99 @@
 /**
  * History listing page behavior.
  *
- * - Formats each row's created_at (stored UTC ISO) into the viewer's
- *   local timezone using Intl.DateTimeFormat, same convention already
- *   established elsewhere in this app (see live-activities-list.js's
- *   own created_at handling) - never done server-side, so the display
- *   always matches the browser's own timezone rather than a fixed one.
+ * - Formats each row's created_at (stored UTC ISO) into 12-hour local
+ *   time + timezone abbreviation - EXACT same formatting logic as
+ *   live-activities-list.js's formatLocalStartTime/getTimezoneLabel
+ *   (mirrored verbatim per client's explicit ask to match the activity
+ *   card's format), just without the "Started " prefix since this is a
+ *   table column, not a card label.
  * - Delete button: inline confirm (simple browser confirm() - History
  *   has no existing confirm-inline-card pattern of its own yet, and a
  *   plain confirm() is proportionate for a single-purpose "delete this
- *   row" action), then AJAX POST to /history/<id>/delete. On success,
- *   removes the row from the table client-side rather than a full page
- *   reload (keeps the current filter/page state intact without an
- *   extra round trip).
+ *   row" action), then AJAX POST to /history/<id>/delete. Deleting also
+ *   removes the activity's saved detection images server-side (see
+ *   history_data.delete_activity) - nothing extra needed client-side
+ *   for that part. On success, removes the row from the table
+ *   client-side rather than a full page reload (keeps the current
+ *   filter/page state intact without an extra round trip).
  */
+
+function getTimezoneLabel(date) {
+  // formatToParts gives structured output instead of a rendered string,
+  // so there's nothing to split/slice - avoids the previous bug where
+  // parsing an already-formatted string broke on browsers that shape it
+  // differently than expected.
+  const tryFormat = (timeZoneName) => {
+    try {
+      const parts = new Intl.DateTimeFormat(undefined, { timeZoneName }).formatToParts(date);
+      const part = parts.find((p) => p.type === "timeZoneName");
+      return part ? part.value : "";
+    } catch (err) {
+      return "";
+    }
+  };
+
+  const generic = tryFormat("shortGeneric");
+  if (generic) return generic;
+
+  const short = tryFormat("short");
+  if (short) return short;
+
+  // Ultimate fallback: the IANA zone id itself (e.g. "Asia/Kolkata") -
+  // always resolvable, never blank, unambiguous regardless of locale.
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function formatCreatedAtParts(isoString) {
+  const date = new Date(isoString);
+  if (!isoString || isNaN(date.getTime())) {
+    return { datePart: "—", timePart: "" };
+  }
+
+  // Date and time are now rendered on separate lines (date above, time
+  // below, in the SAME table cell) - client's explicit ask, to stop the
+  // combined single-line string from forcing a horizontal scrollbar on
+  // the History table. Split into two Intl.DateTimeFormat calls rather
+  // than one toLocaleString + string-splitting, since splitting an
+  // already-formatted string is exactly the fragile pattern this
+  // project's own getTimezoneLabel() comment already warned against
+  // (different locales/browsers shape the combined string differently).
+  const datePart = date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  const timePart = date.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const tzPart = getTimezoneLabel(date);
+
+  return {
+    datePart,
+    timePart: tzPart ? `${timePart} ${tzPart}` : timePart,
+  };
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.querySelector(".history-page");
   if (!page) return;
 
   const deleteUrlTemplate = page.dataset.deleteUrlTemplate;
 
-  function formatCreatedAt(isoString) {
-    if (!isoString) return "—";
-    const date = new Date(isoString);
-    if (isNaN(date.getTime())) return "—";
-
-    const parts = new Intl.DateTimeFormat(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).formatToParts(date);
-
-    return parts.map((p) => p.value).join("");
-  }
-
   document.querySelectorAll(".history-table__created[data-created-at]").forEach((cell) => {
-    cell.textContent = formatCreatedAt(cell.dataset.createdAt);
+    const { datePart, timePart } = formatCreatedAtParts(cell.dataset.createdAt);
+    const dateEl = cell.querySelector(".history-table__created-date");
+    const timeEl = cell.querySelector(".history-table__created-time");
+    if (dateEl) dateEl.textContent = datePart;
+    if (timeEl) timeEl.textContent = timePart;
   });
 
   page.addEventListener("click", async (event) => {

@@ -36,6 +36,19 @@ below); the rest is captured for a future iteration and not yet
 surfaced anywhere in the UI. Editing Table Settings later does not
 change an already-running activity's snapshot.
 
+### Order Number auto-suffix (NEW this session)
+
+If the Order Number typed on the create-activity form already matches
+an order number this table used on a PAST completed activity **today**,
+the field is silently auto-filled with the next free suffix (`_2`,
+`_3`, ...) — the operator does not need to notice or do anything; it
+just happens on Enter or when the field loses focus, before EDP lookup.
+Checked only against History (already-completed activities), not
+against a currently-live activity — a table only ever has one live
+activity at a time already, so there's no separate collision to check
+there. If the check itself fails (e.g. a network hiccup), the operator's
+typed value is left as-is rather than blocking them from continuing.
+
 ## Editing a kit while it's running (NEW this round)
 
 An activity's parts/neglect-list/camera-alert-configuration used to be

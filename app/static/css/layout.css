@@ -32,7 +32,7 @@ body {
 }
 
 .app-header__inner {
-  max-width: 1200px;
+  max-width: 1440px;
   margin: 0 auto;
   padding: var(--spacing-md) var(--spacing-lg);
   display: flex;
@@ -50,7 +50,7 @@ body {
 .app-main {
   flex: 1;
   min-height: 0; /* required for flex child to actually scroll instead of overflowing */
-  max-width: 1200px;
+  max-width: 1440px;
   width: 100%;
   margin: var(--spacing-md) auto;
   padding: var(--spacing-lg);
@@ -80,7 +80,7 @@ body {
 }
 
 .app-footer__inner {
-  max-width: 1200px;
+  max-width: 1440px;
   margin: 0 auto;
   padding: var(--spacing-sm) var(--spacing-lg);
   text-align: center;

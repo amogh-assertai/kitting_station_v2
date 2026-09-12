@@ -29,6 +29,8 @@ Runs on laptop monitors and larger fixed screens; no page-level scroll.
 | `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page, live detection pop-ups, per-camera sound, kit timing, completion |
 | `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec — routes (incl. `/api/activity-settings`), embedded MongoDB schema (including its three schema-history revisions), the `cv_ingest` blueprint, detection pipeline, alert-type/master-switch logic, Socket.IO events, sound resolution, kit-level timing, completion detection, API error contract |
 | `docs/tsd/TSD_CONFIGURATION.md` | Technical spec of the Configuration section, including live-activity config propagation and audio-file caching |
+| `docs/frd/FRD_HISTORY.md` | Functional spec of History — listing page, filters (table + date range), columns, error-count meaning, pagination, delete (incl. image cleanup) |
+| `docs/tsd/TSD_HISTORY.md` | Technical spec — `history_data.py` contracts, Mongo filter/sort/pagination shape, error-tally source, image-folder deletion + the sanitizer-duplication caveat |
 | `docs/WORKING_STYLE_AND_CONSTRAINTS.md` | How the client works. **Read before making any change or delivering anything.** |
 
 ## Multi-table concept
@@ -67,10 +69,37 @@ to detect against).
   (timing + full event log) retained as history nested under that
   kit's own record. Once a camera finishes all its kits it shows a
   "Kits Completed" state and rejects further detections/validations
-  with a specific reason code; once **both** cameras finish, the whole
-  activity auto-moves to history, "Total time" freezes, and viewers
-  see a brief confirmation before being redirected to the landing
-  page.
+  with a specific reason code; once **both** cameras finish, the
+  monitor page's "Total time" freezes and viewers see a brief
+  confirmation before being redirected to the landing page — **but the
+  activity does NOT currently move into `activity_history` at this
+  point** (corrected this doc round — verified directly against
+  `activities_data.py`, which only has `complete_activity_manually()`;
+  no auto-completion-to-history path exists yet, despite this
+  section's own earlier wording implying otherwise). The finished
+  activity stays on the Live Kitting Activities landing page
+  indefinitely until an operator manually completes it. See "Not yet
+  built" below and `FRD_HISTORY.md`.
+- **Order Number auto-suffix (NEW)** — starting a new activity with an
+  order number already used by this table today auto-appends `_2`,
+  `_3`, ... (checked against History only — see
+  `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`).
+- **Detection image storage restructured (NEW)** — was one flat folder
+  per table with uuid filenames; now nested
+  `table/<date>/<kit>_<order>/cam<N>/<kit_index>/<original filename>`,
+  to keep directory listing/deletion fast at expected volume. See
+  `TSD_LIVE_KITTING_ACTIVITIES.md`'s "Image storage" section.
+- **History — listing page (NEW)** — filters (table + date range),
+  8-column table, pagination, per-activity error-count summary, delete
+  (which also removes that activity's saved images). See
+  `FRD_HISTORY.md` / `TSD_HISTORY.md`. "View Detailed Report" /
+  "Download Report" are still disabled placeholders, and auto-completion
+  still doesn't feed this page (see above) — manual completion is
+  currently the only way an activity gets here.
+- **Shared shell content width widened 20% (NEW)** — `layout.css`'s
+  `max-width` went from 1200px to 1440px, applied identically across
+  header/main/footer. Global change, affects every page. See
+  `TSD_BASE_LAYOUT.md`.
   **Two alert types (Wrong Part Error, Validation Error)**, each gated
   by a per-kit, per-camera master switch: a genuinely unrecognized part
   not on the neglect list, or a missing/undercount/overcount issue
@@ -140,23 +169,34 @@ to detect against).
 
 - Table 2 (Truck Cell 1) and Table 3 (Truck Cell 2) — still
   registry-only placeholders
-- A UI to browse a completed kit's retained detection/timing/alert
-  history (the data is fully recorded — per-kit start/first-detection/
-  validated timestamps, every individual detection event's own
-  timestamp, and every alert raised and how it was resolved — no
-  viewer exists yet)
+- A dedicated drill-down UI for one completed kit's retained
+  detection/timing/alert history (the data is fully recorded — per-kit
+  start/first-detection/validated timestamps, every individual
+  detection event's own timestamp, and every alert raised and how it
+  was resolved — no per-kit viewer exists yet). History's own listing
+  page (see below) now surfaces a SUMMARY of this per activity (error
+  counts, completion progress), but not a full per-kit breakdown —
+  that's still the "View Detailed Report" placeholder button.
 - `detections.<cam>.<kit>.validation` reserved schema key remains
   unpopulated — the validate-call's image is now actually USED (shown
   on the kit-advance confirmation pop-up, and on a Validation Error
   red-screen), but nothing writes a structured pass/fail record to this
   specific key yet; that's still a separate, deferred concern
-- History section — placeholder, needs MongoDB
+- History's **listing page is built** (filters, pagination, error
+  summary, delete + image cleanup — see `FRD_HISTORY.md` /
+  `TSD_HISTORY.md`), but **auto-completion still does not move an
+  activity into History** — only the manual "Complete manually" button
+  does. An activity that finishes by hitting `quantity_required` on
+  both cameras currently just sits on the Live Kitting Activities
+  landing page indefinitely. History's own "View Detailed Report" /
+  "Download Report" buttons are also still disabled placeholders.
 - No authentication/authorization layer
-- **`config.yaml` needs a new `live_kitting.validate_popup_uptime_sec`
-  key** (plus the matching `app/config/loader.py` fail-fast entry)
-  before the kit-advance confirmation pop-up can actually run — flagged
-  in `TSD_LIVE_KITTING_ACTIVITIES.md`'s Known Gaps, not yet confirmed
-  done as of this doc update
+- **`config.yaml` has `live_kitting.validate_popup_uptime_sec`, but
+  `app/config/loader.py`'s fail-fast validation list still doesn't
+  include it** — confirmed this round by reading `loader.py` directly.
+  A `config.yaml` missing this key will not fail fast at startup as
+  intended; it'll raise a `KeyError` later, at first request to the
+  monitor page.
 
 ## Tech stack (fixed — don't change without asking the client)
 
@@ -251,7 +291,7 @@ Filesystem storage (gitignored, under `data/`, namespaced per table_id):
 ```
 data/pqpr/table_<id>/
 data/audio/table_<id>/
-data/detections/table_<id>/         # NEW - saved detection frames, <uuid4hex><ext>
+data/detections/table_<id>/<date>/<kit_name>_<order_number>/cam<N>/<kit_index>/  # RESTRUCTURED this session - original filename kept, no longer a flat uuid per table (see TSD_LIVE_KITTING_ACTIVITIES.md "Image storage")
 ```
 
 ## Before you change anything

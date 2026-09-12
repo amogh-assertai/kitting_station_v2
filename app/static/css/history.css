@@ -56,6 +56,29 @@
   color: var(--color-text-muted, inherit);
 }
 
+.history-table__created {
+  /* Overrides the blanket nowrap above - date and time now stack as
+     two separate lines within this one cell (client's explicit ask:
+     date above, time+timezone below), which is also what stopped this
+     column alone from forcing the table wider than the viewport. */
+  white-space: normal;
+}
+
+.history-table__created-date,
+.history-table__created-time {
+  display: block;
+  white-space: nowrap;
+}
+
+.history-table__created-date {
+  font-weight: 500;
+}
+
+.history-table__created-time {
+  font-size: 0.85rem;
+  color: var(--color-text-muted, inherit);
+}
+
 .history-table__kit-name {
   font-weight: 600;
 }

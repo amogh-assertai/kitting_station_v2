@@ -340,14 +340,15 @@ top-level tree. That's the whole point of this restructure.
 
 ### Reserved: validation detail
 
-`detections.<cam>.<kit_index>.validation` is a **reserved, currently
-unpopulated** key. `/api/validate-kit` already accepts an optional
-`image` field, but as of this build that image is only saved to disk
-(via `save_detection_image`) and then **discarded** — no `image_path` or
-any other validation detail is written into Mongo yet. When a future
-build needs to store "what did the kit look like at validation time,"
-or "did this kit pass/fail and why," write it under this key —
-alongside `timing` and `events` for that same kit, not a new tree.
+`detections.<cam>.<kit_index>.validation` remains a **reserved,
+currently unpopulated** key. Note this is a DIFFERENT thing from the
+image itself — the validation IMAGE is fully wired and stored (see
+"Image storage" below, and "Kit advance confirmation pop-up" for how
+`image_path` flows into the confirmation event and the validation_error
+red-screen). This key was originally intended for other validation
+detail ("did this kit pass/fail and why", structured pass/fail data
+beyond the raw image) — when a future build needs that, write it here,
+alongside `timing` and `events` for that same kit index, not a new tree.
 
 ### Kit-index keys are strings on disk, ints in Python
 
@@ -680,18 +681,19 @@ next kit 2." Fixed by threading the validation image through
 every clean advance.
 
 **`validate_kit()` signature and return changes:**
-- Now accepts `image_path=None` as a third parameter — the path
-  `routes.py`'s `save_detection_image()` already saved to disk BEFORE
-  calling `validate_kit()`, previously computed and then discarded
-  entirely (see the file's own historical docstring note on this, now
-  superseded). Default `None` keeps every existing call site backward
-  compatible without modification.
-- Both the clean-advance return AND the validation_error return now
-  also include `old_kit_index` (the index the camera was ON before this
+- Originally took `image_path=None` as a third parameter, computed by
+  `routes.py`'s `save_detection_image()` call BEFORE `validate_kit()`
+  ran. **Superseded by the image-storage restructure** (see "Image
+  storage" below) — `validate_kit()` now takes `image_file=None,
+  image_storage_settings=None` instead, and does the save itself,
+  internally, right after its own `find_one()`. `routes.py` no longer
+  calls `save_detection_image()` at all.
+- Both the clean-advance return AND the validation_error return still
+  include `old_kit_index` (the index the camera was ON before this
   call — trivial for the clean-advance case where it's just
   `new_kit_index - 1`, but stored explicitly rather than recomputed, so
-  `routes.py` never has to guess) and `image_path` (passed straight
-  through from the parameter).
+  `routes.py` never has to guess) and `image_path` (now computed
+  internally using `old_kit_index`, not passed in as a parameter).
 
 **`routes.py`'s new emit, clean-advance path only:**
 ```
@@ -780,7 +782,7 @@ individual route level.
 | `/api/validate-kit` | POST (multipart) | `validate_now` signal — advances one camera's kit index, or raises a Validation Error red-screen instead |
 | `/api/resolve-error` | POST (JSON) | Operator submits `system_error`/`process_error` (+ optional comment) to resolve the active red-screen on one camera — the only way a locked camera reopens |
 | `/api/toggle-sound` | POST (JSON) | Flips one camera's green-sound toggle on the table's current live activity |
-| `/api/detection-image/<table_dir>/<filename>` | GET | Serves a saved detection frame for the pop-up's `<img>` |
+| `/api/detection-image/<path:subpath>` | GET | Serves a saved detection frame for the pop-up's `<img>` — variable-depth path, restructured this session (was `<table_dir>/<filename>`) |
 | `/api/activity-settings/<activity_id>` | GET | **NEW this round.** Powers the "See current settings" modal — see its own section below |
 | (Socket.IO) `join_activity` | — | Client joins the `activity:<id>` room on page load |
 
@@ -1028,12 +1030,18 @@ broadcast to the whole room **including the tab that triggered it**, so
 all viewers update from the same code path rather than an optimistic
 client-side flip that could desync on a failed request.
 
-#### `GET /api/detection-image/<table_dir>/<filename>`
+#### `GET /api/detection-image/<path:subpath>`
 
-Serves a saved detection frame. Path shape mirrors exactly what
-`save_detection_image()` returns (e.g. `table_1/ab12cd34.jpg`) — a
-two-segment route rather than a wildcard, to avoid directory-traversal
-ambiguity.
+Serves a saved detection frame. **Restructured this session** — was a
+two-segment `<table_dir>/<filename>` route; now a variable-depth
+`<path:subpath>` converter, since the nested date/kit/camera/kit_index
+scheme (see "Image storage" below) no longer has a fixed segment count.
+Directory-traversal protection is now explicit rather than incidental:
+`subpath` is resolved with `os.path.abspath`, then checked with
+`os.path.commonpath([images_root, requested_path]) == images_root`
+before serving — a request resolving outside `detection_image_dir`, or
+naming a directory instead of a file, gets a plain 404, never a 500 and
+never a leaked file.
 
 #### `GET /api/activity-settings/<activity_id>` (NEW this round)
 
@@ -1531,16 +1539,159 @@ already-joined tabs are unaffected, and the underlying Mongo write still
 happens regardless). Low probability in real operation; client
 confirmed no queueing/buffering fix is needed for now.
 
-## Known gaps / next-session TODO
+## Image storage (RESTRUCTURED this session)
 
-- **`live_kitting.validate_popup_uptime_sec` is NOT yet added to
-  `config.yaml`/`app/config/loader.py`** — the kit-advance confirmation
-  pop-up (see its own section above) reads this key via
-  `current_app.config["SETTINGS"]["live_kitting"]["validate_popup_uptime_sec"]`,
-  which will raise a `KeyError` until the config file and the loader's
-  fail-fast validation list are both updated. This is the single most
-  important gap to close before that feature can run at all — flagged
-  at delivery time but not yet confirmed done.
+**Why:** the original scheme saved every detection frame flat —
+`data/detections/table_<id>/<uuid4hex><ext>` — one folder per table
+with every image for every activity/kit ever run on that table mixed
+together. At the client's expected volume (millions of images per
+table over time) this made both directory listing and bulk deletion
+(e.g. clearing one completed activity's images) slow. Restructured to
+nest by date/kit/camera/kit_index instead, and each dimension of that
+nesting now bounds how many files ever sit in one directory.
+
+**New path shape:**
+```
+data/detections/table_<id>/<date>/<kit_name>_<order_number>/cam<N>/<kit_index>/<filename>
+```
+- `<date>` — the ACTIVITY's own `created_at` date (`YYYY-MM-DD`, UTC),
+  i.e. the day the activity STARTED, not "today." Every image for one
+  activity lands in one date folder even if the activity runs past
+  midnight.
+- `<kit_name>_<order_number>` — read from the activity document itself
+  (never from the incoming detection form's own `kitname` field — the
+  activity doc is the authoritative source, same "never trust
+  round-tripped client data" principle already applied elsewhere in
+  this codebase). Both are free text (see FRD's "no format validation"
+  on order_number) and are run through `_sanitize_path_segment()`
+  before use — strips `/`, `\`, `..`, collapses any other unsafe
+  character to `_`, never returns an empty segment.
+- `<kit_index>` — confirmed semantics, NOT the same value for both
+  callers:
+  - `record_detection()`: the CURRENT (pre-advance) kit index for this
+    camera at detection time.
+  - `validate_kit()`: the OLD index — the kit just being CLOSED OUT by
+    this validate call, not the new one. A validation image documents
+    the kit that just finished.
+- `<filename>` — the ORIGINAL uploaded filename, unchanged (client's
+  explicit instruction this round — previously a server-generated
+  `uuid4().hex`). DeepStream is expected to never send a duplicate
+  filename within the same kit_index folder; if it ever does anyway,
+  `_dedupe_filename()` appends `_1`, `_2`, ... before the extension and
+  logs a warning — never a silent overwrite, never a hard failure.
+
+**Call-site restructure — `save_detection_image()` moved INSIDE
+`record_detection()`/`validate_kit()`:** previously `routes.py` called
+`save_detection_image(table_id=..., ...)` BEFORE calling
+`record_detection()`/`validate_kit()`, using only `table_id` from the
+raw form — which meant it had no `kit_name`/`order_number`/`kit_index`
+to build the new nested path from (those all require a DB lookup).
+Rather than add a second `find_one()` in `routes.py` just to fetch
+those fields, the save call moved to run INSIDE `record_detection()`
+and `validate_kit()`, immediately after their own existing
+`find_one()` — reusing that same already-fetched `activity_doc`. **This
+adds zero extra MongoDB round trips** versus the previous version.
+
+- `record_detection(activities_collection, form, image_file=None,
+  image_storage_settings=None)` — was `(activities_collection, form,
+  image_path)`.
+- `validate_kit(activities_collection, form, image_file=None,
+  image_storage_settings=None)` — was `(activities_collection, form,
+  image_path=None)`.
+- `image_storage_settings` is a small dict: `{"base_dir",
+  "detection_image_dir", "allowed_extensions"}` — `routes.py` builds
+  this once per request from `current_app.config` and passes it
+  through; neither data-layer function reads Flask's `current_app`
+  directly, keeping them testable with plain mongomock + a fake
+  file-storage object (no Flask app context needed).
+- `cv_ingest/routes.py` no longer calls `save_detection_image()` at
+  all — it just extracts `request.files.get("image")` and passes the
+  raw `FileStorage` object straight through.
+
+**Serve route restructure:** see "`GET
+/api/detection-image/<path:subpath>`" above — two-segment route
+replaced with a `<path:...>` converter plus an explicit
+`os.path.commonpath` containment check, since the nested scheme no
+longer has a fixed segment count.
+
+**No migration performed** — confirmed with the client that no real
+images existed on disk yet under the old flat scheme, so this was a
+clean cutover, not a migration.
+
+## Order-number auto-suffix (NEW this session)
+
+**Client's ask:** if an order number typed when starting a new activity
+already exists for that same table, same day, auto-append `_2`, `_3`,
+etc. rather than allowing (or rejecting) the collision.
+
+**Scope, as confirmed:**
+- Checked against `activity_history` ONLY, not `live_activity_details`
+  — a table can only ever have ONE live activity at a time already (see
+  `check_table_busy`/`is_table_busy`), so a brand-new activity can never
+  collide with a currently-live one on `order_number`. The only
+  collision that matters is against that table's ALREADY-COMPLETED
+  activities for the day.
+- "Same day" = the OTHER activity's own `created_at` date (a completed
+  activity keeps its original `created_at` — this is not a separate
+  "date completed" field), compared against the CURRENT server UTC
+  date at the moment the operator is typing (these are the same value
+  in the overwhelming common case — an activity being created "today"
+  is compared against other activities also created "today").
+- Base-string exact match only — `"PO123"` collides with an existing
+  `"PO123"` or `"PO123_2"`, but is not a substring/prefix match against
+  something like `"PO1234"`.
+
+**New route:** `POST /live-kitting-activities/resolve-order-number` —
+`{table_id, order_number} → {success, order_number}` (the resolved
+value, unchanged if no collision) or `{success: false, error}`.
+
+**New data function:**
+`activities_data.resolve_order_number_suffix(history_collection,
+table_id, order_number)` — scans `activity_history` docs matching
+`table_id`, filters to today's date in Python (not a Mongo date-range
+query — collection size per table/day doesn't currently warrant one,
+and this keeps the logic trivially testable with mongomock), and
+returns the next free suffix.
+
+**Client-side wiring
+(`static/js/live-activity-create.js`):** fires on BOTH Enter and blur
+of the Order Number field (not just Enter) — silently overwrites the
+field with the resolved value before focus moves to EDP Number. A
+network failure on this call never blocks the operator — it's a
+convenience check only; the field is left with whatever the operator
+typed, and nothing here is re-validated at finalize (finalize doesn't
+currently re-check order_number uniqueness at all — this auto-suffix
+is the only place that collision gets addressed).
+
+
+
+- **`live_kitting.validate_popup_uptime_sec` is in `config.yaml` but
+  still MISSING from `app/config/loader.py`'s `_validate_settings()`
+  fail-fast list** — confirmed present in the shipped `config.yaml`
+  (`validate_popup_uptime_sec: 2`), but `loader.py`'s required-paths
+  check does not yet include `("live_kitting",
+  "validate_popup_uptime_sec")`. This means a config.yaml that's
+  missing this key will NOT fail fast at startup as intended — it'll
+  instead raise a `KeyError` later, at first request to the monitor
+  page, when `routes.py` reads
+  `current_app.config["SETTINGS"]["live_kitting"]["validate_popup_uptime_sec"]`.
+  Add the tuple to `loader.py`'s `required_paths` list to close this.
+- **Auto-completion (hitting `quantity_required` on both cameras) still
+  does NOT move an activity into `activity_history`** — confirmed by
+  reading `activities_data.py` directly this session: only
+  `complete_activity_manually()` exists. `STATUS_COMPLETED` is defined
+  as a constant but nothing currently transitions a live activity to
+  it. This was explicitly scoped "in" for a follow-up History-related
+  task but has NOT been built yet — until it is, the only way an
+  activity ever reaches History is the manual "Complete manually"
+  button. Whoever builds this needs to decide WHERE the completion
+  check lives (a natural fit is inside `record_detection()`/
+  `validate_kit()`, right where each camera's advance already happens),
+  and should reuse the same document-copy pattern
+  `complete_activity_manually()` already uses (see "Whole-activity
+  completion (both cameras done)" section above for where the
+  completion CHECK already exists — it currently only sets camera
+  state, not activity status).
 - **`array_filters` (used by `resolve_error()` to badge the correct
   `wrong_part_cards` entry) is untestable with this project's mongomock
   suite** — mongomock does not implement it (not a MongoDB limitation).

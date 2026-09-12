@@ -68,7 +68,10 @@
         <tbody>
           {% for row in rows %}
             <tr data-activity-id="{{ row.id }}">
-              <td class="history-table__created" data-created-at="{{ row.created_at }}">—</td>
+              <td class="history-table__created" data-created-at="{{ row.created_at }}">
+                <span class="history-table__created-date">—</span>
+                <span class="history-table__created-time">—</span>
+              </td>
               <td>
                 <div class="history-table__kit-name">{{ row.kit_name }}</div>
                 <div class="history-table__edp">EDP {{ row.edp_number }}</div>

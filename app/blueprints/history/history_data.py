@@ -42,6 +42,9 @@ resolution is only ever appended AS PART OF resolving) is defensively
 skipped when tallying chosen_option, rather than raising.
 """
 
+import os
+import re
+import shutil
 from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
@@ -265,17 +268,146 @@ def list_history_activities(collection, table_id, date_from, date_to, page, per_
 # Delete
 # ---------------------------------------------------------------------------
 
-def delete_activity(collection, activity_id):
-    """Permanently deletes one activity_history document. Read-only +
-    delete is History's current confirmed scope (no edit) - deletion
-    itself is NOT soft (no separate "deleted" flag/archive), matching
-    the plain "delete" action named in the FRD-level requirement.
+def delete_activity(collection, activity_id, images_base_dir=None, detection_image_dir=None):
+    """Permanently deletes one activity_history document AND its entire
+    saved-images folder on disk (both cameras, every kit index) - the
+    two are deleted together since a history record with no way to
+    view its images, or orphaned images with no record, are both
+    useless (client's explicit ask: deleting the record should also
+    clean up its images).
+
+    images_base_dir/detection_image_dir are optional (default None) so
+    this function still works standalone against just the DB (e.g. in
+    a test that only cares about the Mongo side) - routes.py always
+    passes real values in production. When given, the document is
+    fetched FIRST (before deleting from Mongo) so its table_id/
+    created_at/kit_name/order_number are available to rebuild the
+    exact same folder path used at save time - see
+    _activity_image_folder() below. The image folder is removed AFTER
+    the Mongo delete succeeds, not before - if the Mongo delete fails
+    for any reason, we don't want to have already destroyed images for
+    a record that's still sitting in the database.
+
+    Image-folder removal is BEST-EFFORT: an OSError while removing the
+    folder (permissions, folder already gone, etc.) is caught and
+    logged, not raised - the record's Mongo deletion has already
+    succeeded by that point and should not be reported as a failure to
+    the operator over a filesystem cleanup issue. This mirrors the
+    project's existing philosophy of not hard-failing over save-side
+    filesystem issues (see save_detection_image's own None-on-no-image
+    behavior).
 
     Raises ValidationError if the id is malformed or doesn't match any
     document - routes.py turns this into a 400/404 JSON response,
     never a 500.
     """
     object_id = _to_object_id(activity_id, "activity id")
+
+    doc = None
+    if images_base_dir is not None and detection_image_dir is not None:
+        doc = collection.find_one({"_id": object_id})
+
     result = collection.delete_one({"_id": object_id})
     if result.deleted_count == 0:
         raise ValidationError("Activity not found - it may have already been deleted.")
+
+    if doc is not None:
+        _delete_activity_images(doc, images_base_dir, detection_image_dir)
+
+
+# ---------------------------------------------------------------------------
+# Image-folder deletion helpers
+#
+# Duplicated here from cv_ingest/detection_data.py's sanitizer rather
+# than imported (client's explicit instruction: keep History fully
+# independent, no cross-blueprint import). Any change to the SAVE-side
+# sanitization in detection_data.py must be mirrored here too, or a
+# delete could target the wrong folder - flagged in both places.
+# ---------------------------------------------------------------------------
+
+_UNSAFE_PATH_CHARS = re.compile(r'[^A-Za-z0-9._-]+')
+
+
+def _sanitize_path_segment(value, fallback="unknown"):
+    """MUST stay in sync with cv_ingest/detection_data.py's own
+    _sanitize_path_segment - same logic, duplicated per explicit
+    instruction rather than imported."""
+    value = str(value or "").strip()
+    value = value.replace("..", "_")
+    value = _UNSAFE_PATH_CHARS.sub("_", value)
+    value = value.strip("_")
+    return value or fallback
+
+
+def _activity_image_folder(doc, images_base_dir, detection_image_dir):
+    """Rebuilds the SAME folder path save_detection_image() would have
+    written this activity's images under - everything up to (but not
+    including) the cam1/cam2 split, i.e.
+    <base_dir>/<detection_image_dir>/table_<id>/<date>/<kit_name>_<order_number>/
+    Removing this one folder removes both cameras' images and every
+    kit index in one shot, matching how the folder was structured for
+    exactly this purpose.
+
+    Returns None if table_id/created_at are missing/malformed on the
+    document - defensive only (these are always set at activity
+    creation), so deletion just skips the image-folder step rather
+    than raising over a document that's already otherwise deletable.
+    """
+    table_id = doc.get("table_id")
+    if table_id is None:
+        return None
+
+    created_at_raw = doc.get("created_at")
+    try:
+        activity_date = datetime.fromisoformat(created_at_raw).date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+    kit_name_segment = _sanitize_path_segment(doc.get("kit_name"), "unknown-kit")
+    order_number_segment = _sanitize_path_segment(doc.get("order_number"), "unknown-order")
+    kit_folder = f"{kit_name_segment}_{order_number_segment}"
+
+    return os.path.join(
+        images_base_dir,
+        detection_image_dir,
+        f"table_{table_id}",
+        activity_date,
+        kit_folder,
+    )
+
+
+def _delete_activity_images(doc, images_base_dir, detection_image_dir):
+    """Best-effort removal of the activity's whole image folder (see
+    docstring on delete_activity for why this never raises)."""
+    import logging
+
+    folder_path = _activity_image_folder(doc, images_base_dir, detection_image_dir)
+    if folder_path is None:
+        return
+
+    # Containment check before rmtree, same principle as the
+    # detection-image serve route's traversal guard - never remove
+    # anything outside the configured images root, even if a malformed
+    # document somehow produced a path that resolved oddly.
+    images_root = os.path.abspath(os.path.join(images_base_dir, detection_image_dir))
+    resolved_path = os.path.abspath(folder_path)
+    try:
+        if os.path.commonpath([images_root, resolved_path]) != images_root:
+            logging.getLogger(__name__).warning(
+                "history: refusing to delete image folder outside images root: %s", resolved_path
+            )
+            return
+    except ValueError:
+        return
+
+    if not os.path.isdir(resolved_path):
+        # Nothing to clean up - activity may have had no images saved
+        # at all, or the folder was already removed some other way.
+        return
+
+    try:
+        shutil.rmtree(resolved_path)
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "history: failed to delete image folder %s: %s", resolved_path, exc
+        )

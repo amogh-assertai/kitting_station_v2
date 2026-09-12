@@ -36,7 +36,7 @@ station_monitor/
 ├── data/
 │   ├── pqpr/table_<id>/
 │   ├── audio/table_<id>/
-│   └── detections/table_<id>/      # saved detection frames, <uuid4hex><ext>
+│   └── detections/table_<id>/<date>/<kit>_<order>/cam<N>/<kit_index>/  # RESTRUCTURED - original filename kept (see TSD_LIVE_KITTING_ACTIVITIES.md)
 ├── app/
 │   ├── __init__.py                 # app factory: calls socketio.init_app(app), registers cv_ingest_bp
 │   ├── extensions.py                 # shared `socketio = SocketIO(...)` singleton
@@ -52,10 +52,16 @@ station_monitor/
 │   │   ├── cv_ingest/                   # detection ingest blueprint, from local DeepStream app
 │   │   │   ├── __init__.py             # no url_prefix; routes are /api/...
 │   │   │   ├── routes.py               # /api/detection-update, /api/validate-kit, /api/toggle-sound,
-│   │   │   │                            # /api/detection-image/<dir>/<file>, Socket.IO room join
-│   │   │   └── detection_data.py       # validation, image save, count/sound/timing resolution, completion
-│   │   │                                # detection (both per-camera and whole-activity), Mongo writes
-│   │   ├── history/
+│   │   │   │                            # /api/detection-image/<path:subpath> (variable-depth, restructured),
+│   │   │   │                            # Socket.IO room join
+│   │   │   └── detection_data.py       # validation, image save (now called FROM record_detection/validate_kit,
+│   │   │                                # not routes.py - see TSD_LIVE_KITTING_ACTIVITIES.md), count/sound/
+│   │   │                                # timing resolution, completion detection (both per-camera and
+│   │   │                                # whole-activity), Mongo writes
+│   │   ├── history/                     # BUILT this session - was a single placeholder route.
+│   │   │   ├── routes.py               # GET /history (listing), POST /history/<id>/delete
+│   │   │   └── history_data.py         # filter/paginate/error-tally/delete (incl. image-folder cleanup) -
+│   │   │                                # see TSD_HISTORY.md
 │   │   └── configuration/
 │   ├── templates/
 │   │   ├── base.html
@@ -166,7 +172,6 @@ error was briefly miscategorized as `validation_error`), in
 ## Known gaps / next-session TODO
 
 Carried over from before this revision, still open:
-- MongoDB not connected for History yet.
 - No authentication/authorization layer.
 - No flash-message system — silent-redirect used instead where a
   message would normally go.
@@ -174,8 +179,15 @@ Carried over from before this revision, still open:
   design.
 - Current Kits part-name search still uses an unindexed Mongo regex.
 - Tables 2 and 3 are registry-only.
+- Auto-completion (both cameras hitting `quantity_required`) still does
+  not write to `activity_history` — see `TSD_HISTORY.md`'s own "Known
+  gaps" and `TSD_LIVE_KITTING_ACTIVITIES.md`'s "Known gaps" for detail.
 
-New from this revision — see `TSD_LIVE_KITTING_ACTIVITIES.md`'s own
-"Known gaps" section for the full list (red-alert-type logic, per-kit
-timers, a join-before-emit race on the socket connection, audio
-playback not yet verified with real MP3 files in a real browser, etc.).
+This revision — History is now fully built (MongoDB-connected listing,
+filters, pagination, delete + image cleanup; see `TSD_HISTORY.md`), the
+detection image storage scheme was restructured, and an order-number
+auto-suffix was added to the create-activity flow — see
+`TSD_LIVE_KITTING_ACTIVITIES.md`'s own "Known gaps" section for the
+full list (red-alert-type logic, per-kit timers, a join-before-emit
+race on the socket connection, audio playback not yet verified with
+real MP3 files in a real browser, etc.).
