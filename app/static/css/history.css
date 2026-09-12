@@ -1,0 +1,131 @@
+/* History listing page - filters, table, pagination.
+   Page-specific only (loaded via {% block extra_css %}), no shared
+   global file touched - matches this project's "small, single-purpose
+   CSS files" convention. */
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--spacing-md, 1rem);
+  margin-bottom: var(--spacing-lg, 1.5rem);
+}
+
+.history-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.history-filters__field label {
+  font-size: 0.85rem;
+  color: var(--color-text-muted, inherit);
+}
+
+.history-filters__apply {
+  height: fit-content;
+}
+
+.history-empty {
+  color: var(--color-text-muted, inherit);
+  padding: var(--spacing-lg, 1.5rem) 0;
+}
+
+.history-table-wrap {
+  overflow-x: auto;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.history-table th,
+.history-table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border, #333);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.history-table th {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted, inherit);
+}
+
+.history-table__kit-name {
+  font-weight: 600;
+}
+
+.history-table__edp {
+  font-size: 0.85rem;
+  color: var(--color-text-muted, inherit);
+}
+
+.history-table__progress {
+  font-size: 0.9rem;
+}
+
+.history-status-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.history-status-badge--completed {
+  background: var(--color-success-bg, #1f4d2e);
+  color: var(--color-success-text, #b7f0c5);
+}
+
+.history-status-badge--completed-manually {
+  background: var(--color-warning-bg, #4d3f1f);
+  color: var(--color-warning-text, #f0e0b7);
+}
+
+.history-table__errors {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.history-table__actions-col {
+  min-width: 220px;
+}
+
+.history-table__actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: nowrap;
+}
+
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-md, 1rem);
+  margin-top: var(--spacing-lg, 1.5rem);
+}
+
+.history-pagination__link {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 4px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.history-pagination__link--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.history-pagination__status {
+  font-size: 0.9rem;
+  color: var(--color-text-muted, inherit);
+}

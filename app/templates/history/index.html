@@ -2,7 +2,123 @@
 
 {% block title %}History — {{ app_name }}{% endblock %}
 
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/history.css') }}">
+{% endblock %}
+
 {% block content %}
+<div class="history-page"
+     data-delete-url-template="{{ url_for('history.delete', activity_id='ACTIVITY_ID') }}">
+
   <h1>History</h1>
-  <p>Placeholder page. Historical records/reporting will be built in a later task.</p>
+
+  <form class="history-filters" method="get" action="{{ url_for('history.index') }}">
+    <div class="history-filters__field">
+      <label for="filter-table">Table</label>
+      <select id="filter-table" name="table_id">
+        <option value="" {% if selected_table_id is none %}selected{% endif %}>All Tables</option>
+        {% for table in tables %}
+          <option value="{{ table.id }}" {% if selected_table_id == table.id %}selected{% endif %}>
+            Table {{ table.id }} ({{ table.name }})
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="history-filters__field">
+      <label for="filter-date-from">From</label>
+      <input type="date" id="filter-date-from" name="date_from" value="{{ date_from }}">
+    </div>
+
+    <div class="history-filters__field">
+      <label for="filter-date-to">To</label>
+      <input type="date" id="filter-date-to" name="date_to" value="{{ date_to }}">
+    </div>
+
+    <div class="history-filters__field">
+      <label for="filter-per-page">Per page</label>
+      <select id="filter-per-page" name="per_page">
+        {% for option in allowed_per_page %}
+          <option value="{{ option }}" {% if per_page == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <button type="submit" class="btn btn--primary history-filters__apply">Apply</button>
+  </form>
+
+  {% if db_error %}
+    <p class="history-empty">{{ db_error }}</p>
+  {% elif not rows %}
+    <p class="history-empty">No completed activities match these filters.</p>
+  {% else %}
+    <div class="history-table-wrap">
+      <table class="history-table">
+        <thead>
+          <tr>
+            <th>Created</th>
+            <th>Kit / EDP</th>
+            <th>Order #</th>
+            <th>Completion</th>
+            <th>Status</th>
+            <th>Errors</th>
+            <th class="history-table__actions-col">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr data-activity-id="{{ row.id }}">
+              <td class="history-table__created" data-created-at="{{ row.created_at }}">—</td>
+              <td>
+                <div class="history-table__kit-name">{{ row.kit_name }}</div>
+                <div class="history-table__edp">EDP {{ row.edp_number }}</div>
+              </td>
+              <td>{{ row.order_number }}</td>
+              <td>
+                <div class="history-table__progress">Cam1: {{ row.cam1.completed }}/{{ row.cam1.quantity_required }}</div>
+                <div class="history-table__progress">Cam2: {{ row.cam2.completed }}/{{ row.cam2.quantity_required }}</div>
+              </td>
+              <td>
+                <span class="history-status-badge history-status-badge--{{ row.status }}">
+                  {{ "Completed" if row.status == "completed" else "Completed Manually" }}
+                </span>
+              </td>
+              <td>
+                <div class="history-table__errors">
+                  <span>Validation: {{ row.errors.validation_error }}</span>
+                  <span>Wrong Part: {{ row.errors.wrong_part }}</span>
+                </div>
+                <div class="history-table__errors">
+                  <span>System: {{ row.errors.system_error }}</span>
+                  <span>Process: {{ row.errors.process_error }}</span>
+                </div>
+              </td>
+              <td class="history-table__actions">
+                <button type="button" class="btn btn--secondary btn--small history-action-report" disabled title="Coming soon">View Report</button>
+                <button type="button" class="btn btn--secondary btn--small history-action-download" disabled title="Coming soon">Download</button>
+                <button type="button" class="btn btn--danger btn--small history-action-delete">Delete</button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <nav class="history-pagination" aria-label="History pages">
+      {% set base_params = {"table_id": selected_table_id or "", "date_from": date_from, "date_to": date_to, "per_page": per_page} %}
+
+      <a class="history-pagination__link {% if page <= 1 %}history-pagination__link--disabled{% endif %}"
+         href="{{ url_for('history.index', page=page-1, **base_params) if page > 1 else '#' }}">&larr; Prev</a>
+
+      <span class="history-pagination__status">Page {{ page }} of {{ total_pages }} &middot; {{ total_count }} total</span>
+
+      <a class="history-pagination__link {% if page >= total_pages %}history-pagination__link--disabled{% endif %}"
+         href="{{ url_for('history.index', page=page+1, **base_params) if page < total_pages else '#' }}">Next &rarr;</a>
+    </nav>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/history-list.js') }}"></script>
 {% endblock %}
