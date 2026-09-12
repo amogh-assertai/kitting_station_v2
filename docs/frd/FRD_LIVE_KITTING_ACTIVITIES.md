@@ -19,8 +19,12 @@ otherwise.
 
 ## Landing page
 
-Unchanged from the original build — see the app-wide FRD/TSD index for
-card contents, Complete Manually flow, etc.
+Card contents, Complete Manually flow, etc. — see the app-wide FRD/TSD
+index. **One change this round:** each card's "Started" timestamp now
+shows the full date alongside the time it already showed (e.g. "Started
+Sep 9, 2026, 8:50 PM `<timezone>`") — previously time-only. The
+underlying start time and timezone-detection logic are unchanged; this
+was a display-only fix.
 
 ## Create activity flow
 
@@ -60,8 +64,38 @@ running activity too — no restart needed.
   element that visually reflects the config itself, so nothing moves or
   flashes, but the change is confirmed to have happened).
 - Table Settings (Audio Settings, Expected Client IPs, Push
-  Notifications) are **NOT** part of this — that snapshot rule is
-  unchanged; only kit-derived configuration propagates.
+  Notifications) are **NOT** part of THIS specific propagation — but
+  see the next section, which covers the same idea applied to Table
+  Settings on its own terms.
+
+## Editing Table Settings while a kit is running (NEW, a round after the above)
+
+The same reversal as above, extended to Table Settings — client's ask:
+"for table settings as well, if its updated, it should check if any
+live activity is there and update there as well like kitting
+configuration." Saving any of the three Table Settings sections (Audio
+Settings, Expected Client IPs, or Push Notification Settings) now
+propagates immediately to any live activity on that table.
+
+- Matched by **table**, not by kit — since Table Settings belongs to
+  the table as a whole, not to any specific kit. Every currently-live
+  activity on that table picks up the change (in practice, at most one,
+  since only one live activity is allowed per table at a time).
+- Only affects activities that are still **live** — same rule as kit
+  config propagation.
+- All three sections propagate independently — saving just the Expected
+  Client IPs, for instance, updates only that part of a live activity's
+  Table Settings snapshot; the other two sections' most-recently-saved
+  values are preserved, not reset.
+- Takes effect immediately — an in-progress activity's detection sound
+  now uses the newly-saved audio file (or the newly-changed enabled/
+  disabled default) on its very next detection, with no restart needed.
+- Same live-viewer notification as kit config propagation (informational
+  only today).
+- The "See current settings" modal (above) always reflects whichever
+  Table Settings values are currently on the activity's own snapshot —
+  so after this propagation runs, the modal's next open shows the new
+  values immediately, same as it already does for kit-config changes.
 
 ## Monitor page
 
@@ -81,17 +115,24 @@ Below that, two camera panels side by side.
   kits — it does not keep counting after the activity is effectively
   done.
 - **Order / Kit name / EDP** — read-only summary.
-- **"See current settings"** — opens a modal (built this round) showing
-  a fresh-from-the-database snapshot of this activity's own running
-  configuration: kit info, and per camera — current kit index, camera
-  lock state, green-sound toggle state, every configured part with its
-  alert flags, the neglect list, and the Camera Alert Configuration
-  master switches. **Always reads the LIVE ACTIVITY's own snapshot, not
-  the kit's master configuration** — the two can differ (see "Editing a
-  kit while it's running," below) and this is specifically meant to
-  show what THIS run is actually using right now. Re-fetched fresh from
-  the database every time the button is clicked — never cached from a
-  previous open or from the page's own initial load.
+- **"See current settings"** — opens a modal showing a fresh-from-the-
+  database snapshot of this activity's own running configuration: kit
+  info, and per camera — current kit index, camera lock state,
+  green-sound toggle state, every configured part with its alert flags,
+  the neglect list, and the Camera Alert Configuration master switches.
+  **A round after this modal was first built, it was extended to also
+  show the activity's Table Settings snapshot** — Audio Settings (per
+  slot: filename and whether it's enabled), Expected Client IPs, and
+  Push Notification settings (emails and each notification type's
+  enabled state, with its threshold % where applicable). **Always reads
+  the LIVE ACTIVITY's own snapshot, never the master configuration
+  tables** — for both kit config and Table Settings, the running
+  snapshot can differ from what's currently saved in Configuration
+  (see "Editing a kit while it's running" and "Editing Table Settings
+  while a kit is running," below), and this modal is specifically meant
+  to show what THIS run is actually using right now. Re-fetched fresh
+  from the database every time the button is clicked — never cached
+  from a previous open or from the page's own initial load.
 
 ### Per-camera panels (Cam 1 left, Cam 2 right)
 

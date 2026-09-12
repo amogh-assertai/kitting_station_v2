@@ -95,18 +95,37 @@ to detect against).
   that activity immediately** (parts, neglect list, camera alert
   config) — previously a strict one-time snapshot at creation, this is
   the one case where that rule has been deliberately reversed.
+  **The same propagation now also applies to Table Settings** — saving
+  Audio Settings, Expected Client IPs, or Push Notification Settings
+  updates any live activity on that table immediately (table-scoped,
+  not kit-scoped, since Table Settings belongs to the table as a
+  whole).
   **"See current settings" is now a working modal**, not a placeholder
   — fetches the activity's own live snapshot fresh from MongoDB on
-  every open (never the kit's master config, and never cached),
-  showing kit info plus per-camera runtime state, parts, neglect list,
-  and alert configuration.
+  every open (never the kit's master config or the table's master
+  settings, and never cached), showing kit info, per-camera runtime
+  state/parts/neglect list/alert configuration, and — added a round
+  after the modal's initial build — the activity's Table Settings
+  snapshot too (audio slots, expected IPs, push notification emails and
+  types).
   **Audio files are now cache-enabled** (`Cache-Control: max-age=3600`
   + conditional ETag/304 support) — previously re-fetched over the
-  network on every single play, for every connected client. See
-  `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`
-  for full detail on all of the above; the audio-caching mechanism
-  itself is documented in `TSD_CONFIGURATION.md` (it lives in the
-  Configuration blueprint's audio-serving route, not `cv_ingest`).
+  network on every single play, for every connected client.
+  **Red (unexpected-part) audio can no longer be disabled** in Table
+  Settings — both radios still render per camera, but Disabled is
+  locked out, enforced server-side so a crafted request can't bypass
+  the UI either.
+  **Two smaller fixes this round:** the Validation Error red-screen's
+  issue lines now use the client's exact requested format ("Missing
+  Component: `<name>`| Required: `<n>` | Found: `<n>`." for missing,
+  a simpler `<name>` | Required: `<n>` | Found: `<n>` for undercount/
+  overcount); and a repeat wrong-part detection (alert disabled) now
+  correctly creates its own new card each time instead of incorrectly
+  re-tagging an earlier card as "Last detected."
+  See `FRD_LIVE_KITTING_ACTIVITIES.md` / `TSD_LIVE_KITTING_ACTIVITIES.md`
+  for full detail on all of the above; the audio-caching and
+  red-audio-lock mechanisms are documented in `TSD_CONFIGURATION.md`
+  (they live in the Configuration blueprint, not `cv_ingest`).
 - **Kiosk deployment** — `launchers/` at the project root has a
   double-clickable Windows `.bat` and Ubuntu `.desktop`/`.sh` pair that
   open the monitor in Chrome kiosk mode with the flag required for
@@ -170,14 +189,17 @@ app/
 ├── blueprints/<name>/routes.py
 ├── blueprints/configuration/
 │   ├── pqpr_parser.py
-│   ├── current_kits_data.py             # kit CRUD + validation; NEW - live-activity
+│   ├── current_kits_data.py             # kit CRUD + validation; live-activity
 │   │                                      # config propagation (update_kit_live_snapshot)
-│   └── table_settings_data.py
+│   └── table_settings_data.py           # audio/IPs/push-notification CRUD + validation;
+│                                          # live-activity propagation (update_table_settings_
+│                                          # live_snapshot); red-audio-always-enabled enforcement
 ├── blueprints/live_kitting_activities/
 │   └── activities_data.py              # table_settings + neglect/alert-config snapshot, sound toggle
 │                                         # seeding, real detection counts + completion state + kit
 │                                         # timer start, neglected/wrong_part card shaping,
-│                                         # "See current settings" modal view shaping
+│                                         # "See current settings" modal view shaping (incl.
+│                                         # table_settings sub-section)
 ├── blueprints/cv_ingest/                # detection ingest from local DeepStream app
 │   └── detection_data.py               # validation, image save, count/sound/timing resolution,
 │                                         # per-camera + whole-activity completion detection,
@@ -190,22 +212,32 @@ app/
 │   │                                     # TSD_LIVE_KITTING_ACTIVITIES.md's Known Gaps
 │   └── db.py
 ├── templates/base.html
-├── templates/configuration/...
+├── templates/configuration/
+│   └── table_settings.html             # Audio Settings rows (red slots locked to Enabled),
+│                                         # Expected Client IPs, Push Notification Settings
 ├── templates/live_kitting_activities/
 │   └── monitor.html                    # detection pop-ups, blocking red-screen (issues/buttons/
 │                                         # comment), kit-advance confirmation pop-up (green/blue),
-│                                         # "See current settings" modal, sound toggle, kit timer,
-│                                         # completion overlay
+│                                         # "See current settings" modal (incl. Table Settings
+│                                         # section), sound toggle, kit timer, completion overlay
 └── static/{css,js}/
     ├── css/monitor.css                 # detection pop-up, blocking red-screen, neglected/wrong_part
     │                                     # card styling (incl. S/P badge), kit-advance confirmation
     │                                     # pop-up (incl. blue variant), settings modal, sound toggle,
     │                                     # kit timer, completion overlay
+    ├── css/table-settings.css          # Audio Settings/IP list/push-notification styling, incl.
+    │                                     # the locked-radio look for red audio
     └── js/
         ├── monitor.js                  # Socket.IO wiring, all live-update handlers (incl. error:red/
         │                                 # error:resolved/kit:validated/config:updated), live card
         │                                 # creation for neglected/wrong_part, settings-modal fetch +
-        │                                 # render, sound playback (one-shot + looping)
+        │                                 # render (incl. Table Settings section), sound playback
+        │                                 # (one-shot + looping)
+        ├── live-activities-list.js     # landing page card behavior; "Started" now shows full
+        │                                 # date + time, not time-only
+        ├── table-settings.js           # Audio/IP/push-notification staged-save behavior; red
+        │                                 # audio slots hardcoded to "enabled" on save regardless
+        │                                 # of (locked) DOM radio state
         └── vendor/socket.io.min.js     # self-hosted client
 
 launchers/                               # kiosk-mode deployment, separate from the Flask app

@@ -11,8 +11,10 @@ error-lock feature (Wrong Part Error and Validation Error alert types,
 per-kit-per-camera master switches, neglected-part handling, operator
 resolution with System Error/Process Error + comment, persistent
 camera-lock state), a kit-advance confirmation pop-up, live propagation
-of kit-configuration edits to already-running activities, and a
-fresh-from-database "See current settings" modal are all built and
+of both kit-configuration AND table-settings edits to already-running
+activities, and a fresh-from-database "See current settings" modal
+(now also showing the activity's Table Settings snapshot) are all built
+and
 driven by real events posted from the local DeepStream application.
 This is not a stub. One outstanding config-file gap remains before the
 confirmation pop-up can run — see "Known gaps," below.
@@ -487,6 +489,30 @@ decision is made. `detection_data.py`'s own in-file comment on
 before changing either the display logic or the counting logic, since
 the two are computed from overlapping but NOT identical conditions.
 
+**Bug found and fixed this round — "Last detected" badge on the wrong
+card:** `monitor.js`'s `findPartCard(panel, partName)` matches any
+`.part-card[data-part-name="..."]`, and a wrong_part card ALSO carries
+`data-part-name` (for display purposes). On a **repeat** wrong_part hit
+for the same part name (switch off, so no lock stops the second hit
+from arriving), `findPartCard()` incorrectly matched the FIRST
+wrong_part card and re-tagged it "Last detected" instead of
+`createWrongPartCard()` making a fresh individual card — client's
+report: repeat hits were "tagging the same red card as last detected"
+instead of behaving like the switch-ON (blocking) path already does,
+one new card per occurrence. **Fixed** by excluding
+`.part-card--wrong_part` from `findPartCard()`'s selector entirely — a
+wrong_part card should never be "found and reused" by name, only a
+real configured part or a grouped neglected-part card should. The
+NEWEST wrong_part card is now explicitly tagged "Last detected" by
+`handleGreenDetection()`'s wrong_part branch itself (client's explicit
+call this round: it should behave like a real/neglected part in that
+one respect, while still creating a new card every single hit).
+**Lesson for any future card type sharing `data-part-name`:**
+`findPartCard()`'s selector needs an explicit `:not(...)` exclusion for
+any card type that is individual/uncounted by design — the attribute
+existing for display purposes doesn't mean the card is safe to "find
+and update."
+
 ### Neglected parts — treated as a green-path outcome
 
 **Client's explicit reversal** of the original design (where a
@@ -530,6 +556,19 @@ qualifying issues across every part on that camera are collected into
 ONE list** (client: "one validation error, can have multiple parts
 issue, but combined its one validation error" — never split into
 several separate red-screens for one validate call).
+
+**Display format for each issue line, corrected this round**
+(`monitor.js`'s `formatIssueLine()`), client's exact spec:
+```
+missing:              "Missing Component: <name>| Required: <n> | Found: <n>."
+undercount/overcount: "<name> | Required: <n> | Found: <n>"
+```
+Note the "Missing Component:" prefix and trailing period are specific
+to the `missing` case only — `undercount`/`overcount` share a simpler,
+prefix-less format. This replaced an earlier, less precise format
+(`"<name> required <n> found <n> (<issue>)"`) that was never explicitly
+specified by the client and didn't match what they actually wanted once
+they saw it rendered.
 
 If the switch is on and `issues` is non-empty: `validate_kit` does
 **NOT** advance the kit index. It locks the camera, sets
@@ -611,6 +650,24 @@ defensively), a missing document is a silent no-op, never a raised
 error — by the time this runs, the camera-level `validate` has already
 succeeded and returned 200 to the caller; failing to *also* complete to
 history should never surface as an error on top of that.
+
+## Landing page — activity card "Started" timestamp (NEW this round)
+
+`app/static/js/live-activities-list.js`'s `formatLocalStartTime()`
+previously showed time only (e.g. "Started 8:50 PM `<tz>`"). Client's
+ask: also show the date. Now uses `Date.prototype.toLocaleString()`
+(full date + time formatted TOGETHER by the browser's own `Intl`
+implementation) instead of `toLocaleTimeString()`, producing e.g.
+**"Started Sep 9, 2026, 8:50 PM `<tz>`"** — client's exact example
+format. Formatting date and time together (one `toLocaleString` call
+with both sets of options) rather than concatenating two separately-
+formatted strings means locale-specific ordering/punctuation is handled
+correctly by the browser itself, not a hardcoded template — relevant
+since this app already goes out of its way (see `getTimezoneLabel()`,
+unchanged this round) to render a time that matches the viewer's own
+wall clock rather than raw UTC or a hardcoded timezone. `created_at`
+(the underlying UTC ISO string this is parsed from) is unchanged — this
+was a display-only fix.
 
 ## Kit advance confirmation pop-up (NEW - added a round after the initial red-screen build)
 
@@ -989,16 +1046,20 @@ route's design:
   calls this endpoint every single time it's opened, never reusing a
   previous response.
 - **Reads the LIVE ACTIVITY's own snapshot fields**
-  (`parts_configured`, `neglect_parts`, `camerawise_alert_config`) —
-  client: "dont load from configuration table, load whats in current
-  activity." Never touches `current_kit_configurations` (the kit's
-  master config doc) at all. This is precisely why the config-
-  propagation feature (see "Editing a kit while it's running" in the
-  FRD, and `TSD_CONFIGURATION.md`'s own new section) matters here: once
-  a kit edit propagates to a live activity's snapshot, this modal's
-  next open immediately reflects it, with zero code path needing to
-  know propagation happened — it just reads whatever is on the
-  document right now.
+  (`parts_configured`, `neglect_parts`, `camerawise_alert_config`, and
+  — added a round after this route's initial build — `table_settings`
+  too) — client: "dont load from configuration table, load whats in
+  current activity." Never touches `current_kit_configurations` (the
+  kit's master config doc) or `table_configuration` (the table's master
+  settings doc) directly. This is precisely why BOTH propagation
+  features matter here: kit-config propagation (see "Editing a kit
+  while it's running" in the FRD, and `TSD_CONFIGURATION.md`'s "Live-
+  activity propagation" section) and table-settings propagation (see
+  `TSD_CONFIGURATION.md`'s own section on this, added later) both write
+  directly onto this same activity document — so this modal's next
+  open immediately reflects either kind of edit, with zero code path
+  in THIS route needing to know propagation happened. It just reads
+  whatever is on the document right now.
 - **Includes runtime state, not just static config** — client: "Yes,
   also show camera_state, current_kit_index, sound toggle state, etc."
 
@@ -1024,10 +1085,32 @@ route's design:
       "neglect_parts": [{"part_name": "..."}],
       "camera_alert_config": {"alert_validation_error": true, "alert_wrong_part_error": false}
     },
-    "cam2": { "...": "..." }
+    "cam2": { "...": "..." },
+    "table_settings": {
+      "audio_settings": {
+        "camera_1_green": {"original_filename": "...", "default_enabled": true},
+        "camera_1_red": {"original_filename": "...", "default_enabled": true}
+      },
+      "expected_client_ips": ["10.0.0.5"],
+      "push_notification_emails": ["ops@dormont.com"],
+      "push_notifications": {
+        "error_rate_threshold_notification": {"enabled": true, "threshold_percent": 15.0}
+      }
+    }
   }
 }
 ```
+**`table_settings` added a round after this route's initial build**
+(client: "in see current settings buttons, we also need to show table
+cofiguration also... that as would have copied to live activity so
+show table settings as well"). Shaped by
+`build_current_settings_view()`'s own `_table_settings_view()` helper —
+reads `doc["table_settings"]` exactly as `create_live_activity()` (or a
+later propagation write — see `TSD_CONFIGURATION.md`) put it there,
+degrading to an empty-but-shaped skeleton (empty dict/lists) rather
+than raising if the key is ever missing, matching this project's
+general "never crash the page over a missing optional field"
+convention.
 
 **Error responses:** `400` for a malformed `activity_id` (not a valid
 `ObjectId`), `404` if no document matches, `500` on `PyMongoError` — all
@@ -1053,11 +1136,16 @@ client's explicit call. Closeable via an X button, clicking the
 backdrop, or Escape. Content is built entirely client-side from the
 fetch response (`renderSettingsContent()` in `monitor.js`) — grouped
 sections per the client's spec (Kit info → Parts per camera → Neglect
-list per camera → Camera Alert Configuration per camera). All
-interpolated text goes through a minimal `escapeHtml()` helper before
-being placed in `innerHTML` — part/kit names ultimately come from
-operator-typed data in Current Kits Configuration, so this is treated
-as untrusted input even on an internal on-prem tool.
+list per camera → Camera Alert Configuration per camera), plus a final
+**Table Settings** section (`renderTableSettingsBlock()`, added a round
+after the modal's initial build) — Audio Settings (one row per slot,
+filename + Enabled/Disabled), Expected Client IPs, Push Notification
+Emails, and Push Notification Types (with the threshold % inline where
+applicable). All interpolated text goes through a minimal
+`escapeHtml()` helper before being placed in `innerHTML` — part/kit
+names, IPs, and emails ultimately come from operator-typed data in
+Current Kits Configuration / Table Settings, so this is treated as
+untrusted input even on an internal on-prem tool.
 
 ## API error contract
 
@@ -1468,14 +1556,19 @@ confirmed no queueing/buffering fix is needed for now.
 - **"History" button** is still an unwired placeholder. ("See current
   settings" is now fully built — see its own section above; do not
   confuse the two, they used to be grouped together in this list.)
-- **`table_settings` snapshot only partially consumed** — only
-  `audio_settings` (for sound) is read anywhere right now.
-  `expected_client_ips` and `push_notifications` are captured at
-  creation time but not yet used by any code path. Note this snapshot
-  is explicitly NOT affected by the new kit-config propagation feature
-  (see "Editing a kit while it's running" in the FRD) — only
-  kit-derived fields propagate; Table Settings stays a pure one-time
-  snapshot.
+- **`table_settings` snapshot is now genuinely two-way live** — a round
+  after this was flagged as "one-time snapshot only," Table Settings
+  propagation was built (see `TSD_CONFIGURATION.md`'s "Live-activity
+  propagation — Table Settings" section): editing Audio Settings,
+  Expected Client IPs, or Push Notifications now updates any live
+  activity on that table immediately, the same way kit-config edits
+  already did. **Consumption is still partial** though — only
+  `audio_settings` (for sound) is actually READ by any live detection/
+  playback logic; `expected_client_ips` and `push_notifications` are
+  kept in sync on the snapshot (and shown in the "See current settings"
+  modal) but still aren't consumed by any code path that DOES anything
+  with them. Don't confuse "propagates" with "is used" — this entry is
+  about the latter still being incomplete.
 - **`detections.<cam>.<kit>.validation` is reserved but unpopulated** —
   `/api/validate-kit` accepts an image and, as of the confirmation
   pop-up work, now actually USES it (shown on the pop-up, and on a
@@ -1512,8 +1605,9 @@ confirmed no queueing/buffering fix is needed for now.
 - No rate-limiting on the ingest endpoints.
 - No authentication/authorization layer anywhere in the app.
 - **No real-MongoDB integration test exists in this project at all** —
-  every automated test runs against mongomock (90+ assertions across
-  the red-screen/neglect/config-propagation suites as of this round).
+  every automated test runs against mongomock (150+ assertions across
+  the red-screen/neglect/config-propagation/table-settings-propagation
+  suites as of this round).
   This has been sufficient so far but `array_filters` (above) is the
   clearest concrete case where that choice leaves a real gap; worth
   considering a real-MongoDB (or `mongomock`-alternative) test tier if

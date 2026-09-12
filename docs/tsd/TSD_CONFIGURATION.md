@@ -91,10 +91,10 @@ All wrapped in `try/except Exception`, always return valid JSON.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/configuration/table/<int:table_id>/table-settings` | Page render — Audio Settings rows, Expected Client IPs, notification rows, push-notification emails |
-| POST | `/configuration/table/<int:table_id>/table-settings/audio/save` | multipart form: `audio_<slot_id>` (optional file per slot) + `default_<slot_id>` (`enabled`/`disabled`) for all 4 slots → `{success, audio_settings}` |
+| POST | `/configuration/table/<int:table_id>/table-settings/audio/save` | multipart form: `audio_<slot_id>` (optional file per slot) + `default_<slot_id>` (`enabled`/`disabled`) for all 4 slots → `{success, audio_settings}`. **Now also propagates to any live activity on this table** — see "Live-activity propagation — Table Settings," below. |
 | GET | `/configuration/table/<int:table_id>/table-settings/audio/<slot_id>/file` | Serves the stored MP3 for that slot (`audio/mpeg`, inline — used for Preview, and for every detection/kit-advance/red-screen sound on the Live Kitting Activities monitor page). 404 if the slot is unknown or has no stored file. **Now cache-enabled** — see "Audio caching," below. |
-| POST | `/configuration/table/<int:table_id>/table-settings/ips/save` | Body: `{"ips": [...]}` → replaces the whole list → `{success, ips}` |
-| POST | `/configuration/table/<int:table_id>/table-settings/push-notifications/save` | Body: `{"emails": [...], "notifications": {...}}` → `{success, emails, notifications}` |
+| POST | `/configuration/table/<int:table_id>/table-settings/ips/save` | Body: `{"ips": [...]}` → replaces the whole list → `{success, ips}`. **Now also propagates** — same as Audio Settings, above. |
+| POST | `/configuration/table/<int:table_id>/table-settings/push-notifications/save` | Body: `{"emails": [...], "notifications": {...}}` → `{success, emails, notifications}`. **Now also propagates** — same as Audio Settings, above. |
 
 ---
 
@@ -327,20 +327,133 @@ NOTIFICATION_TYPES = [
     {"id": "activity_creation_error_notification", "label": "Activity Creation Error Notification", "has_threshold": False},
 ]
 NOTIFICATION_DEFAULT_ENABLED = False  # notification default (opposite of audio)
+
+# NEW this round - see table_settings_data.py's own comment on this
+_RED_AUDIO_SLOT_IDS = {"camera_1_red", "camera_2_red"}
 ```
+
+### Red audio always enabled (NEW this round)
+
+Client's ask: red (unexpected-part) audio should stay Enabled by
+default with **no way to disable it**, for either camera — the
+Enabled/Disabled radio pair still renders for these two rows (client:
+"show both radio buttons for them"), but Disabled is inert.
+
+**Enforced in three places, deliberately redundant:**
+1. **`table_settings.html`** — for `camera_1_red`/`camera_2_red` rows
+   only, both radios render with `disabled`, and Enabled additionally
+   renders `checked` unconditionally (ignoring whatever
+   `row.default_enabled` actually is) — a disabled-but-checked radio
+   still reports correctly via `:checked` in every browser, verified
+   with a real DOM test this round, not just assumed.
+2. **`table-settings.js`**'s save handler — hardcodes `"enabled"` for
+   these two slot ids when building the save request, regardless of
+   the (disabled, so already inert) DOM radio state. This makes the
+   actual rule independent of the template's disabled-radio detail, so
+   a future template change can't silently reopen a way to submit
+   "disabled" for red.
+3. **`table_settings_data.py`'s `save_audio_settings()`** — the real
+   enforcement point. Forces `current["default_enabled"] = True` for
+   any slot id in `_RED_AUDIO_SLOT_IDS`, **regardless of what was
+   submitted** — this is what actually stops a hand-crafted POST
+   (bypassing the UI entirely) from disabling red audio. The other two
+   enforcement points above are UX/defense-in-depth; this one is the
+   one that matters if someone calls the endpoint directly.
+
+`.radio-option--locked` (new CSS class, `table-settings.css`) greys out
+the Disabled label (`opacity: 0.45; cursor: not-allowed`) so it reads
+as locked/unavailable rather than "just currently unchecked."
 
 ### Data access layer (`table_settings_data.py`)
 
 | Function | Purpose |
 |---|---|
 | `get_table_config(collection, table_id)` | Returns the doc, or an empty-but-shaped skeleton if none exists yet. Never writes. |
-| `save_audio_settings(collection, table_id, slot_updates)` | `slot_updates`: `{slot_id: {"default_enabled": bool, "file": {"original_filename", "stored_filename"} or None}}`. `file: None` leaves that slot's stored file untouched — only the default changes. Merges into the existing `audio_settings` dict, upserts. |
+| `save_audio_settings(collection, table_id, slot_updates)` | `slot_updates`: `{slot_id: {"default_enabled": bool, "file": {"original_filename", "stored_filename"} or None}}`. `file: None` leaves that slot's stored file untouched — only the default changes. Merges into the existing `audio_settings` dict, upserts. **Red slots (`camera_1_red`/`camera_2_red`) always force `default_enabled: True` regardless of what's submitted — see "Red audio always enabled," above.** |
 | `save_expected_ips(collection, table_id, ips)` | Replaces `expected_client_ips` atomically. Trims, drops blanks, dedupes (order-preserving). No format validation. |
 | `save_push_notifications(collection, table_id, emails, notifications)` | Replaces `push_notification_emails` (same cleaning as IPs) and `push_notifications` atomically. `_validate_notifications()` normalizes to exactly one entry per `NOTIFICATION_TYPES` id, defaulting missing/malformed entries to Disabled. |
+| `find_live_activities_for_table(live_activities_collection, table_id)` | **NEW this round.** Every `live_activity_details` doc with `status="live"` for this `table_id` — see "Live-activity propagation — Table Settings," below. |
+| `update_table_settings_live_snapshot(live_activities_collection, table_id, table_config_doc)` | **NEW this round.** Pushes all four `table_settings` sub-keys from the just-updated `table_config_doc` onto every matching live activity — see below. |
 
 `_validate_notifications()` threshold rule: for `error_rate_threshold_notification`, `threshold_percent` is **required and validated to be a number in [0, 100]** only when `enabled: True` is submitted for that entry; raises `ValidationError` otherwise. When `enabled: False`, whatever threshold value was submitted is kept if parseable, else stored as `None` — no strict requirement while disabled.
 
 `ValidationError` (this module's own class, same pattern as `current_kits_data.ValidationError`) is caught in `routes.py` and turned into a 400 JSON response.
+
+### Live-activity propagation — Table Settings (NEW this round)
+
+Mirrors Current Kits Configuration's own live-activity propagation
+(see its section above) — same underlying pattern, but table-scoped
+instead of kit-scoped, since Table Settings belongs to the table, not
+to any specific kit. Client's ask: "for table settings as well, if its
+updated, it should check if any live activity is there and update
+there as well like kitting configuration."
+
+**Two new functions in `table_settings_data.py`** (see table above):
+```python
+def find_live_activities_for_table(live_activities_collection, table_id):
+    """Every live_activity_details doc with status="live" for this
+    table_id. The FRD's "one live activity per table" rule means this
+    returns at most one document today, but the query itself doesn't
+    hardcode that constraint - same reasoning as
+    current_kits_data.find_live_activities_for_kit's own docstring."""
+
+def update_table_settings_live_snapshot(live_activities_collection, table_id, table_config_doc):
+    """Pushes audio_settings/expected_client_ips/
+    push_notification_emails/push_notifications from table_config_doc
+    onto activity.table_settings.<same four keys> for every matching
+    live activity. table_config_doc must be the FULL table_configuration
+    document (not just the section that was just saved) - each of the
+    three save_* functions only updates PART of this document, so the
+    caller re-fetches the whole thing via get_table_config() after
+    saving, and this function copies all four keys verbatim every time.
+    This keeps the function itself simple (no partial-update variants)
+    at the cost of one extra find_one() per save - a table_configuration
+    doc is small and this only runs on an explicit Save click, not on
+    any hot path."""
+```
+
+**All three save routes in `configuration/routes.py`
+(`table_settings_audio_save`, `table_settings_ips_save`,
+`table_settings_push_notifications_save`) now, after their own save
+succeeds:**
+1. Call `get_table_config()` again to get the FULL current document
+   (not just the section that route just touched).
+2. Call `update_table_settings_live_snapshot()` with it — a cheap no-op
+   (one `find()` returning zero documents) if nothing is currently live
+   on that table.
+3. For each activity actually updated, emit `"config:updated"` to that
+   activity's Socket.IO room — **reuses the exact same event name** the
+   kit-config propagation already uses (`monitor.js`'s existing
+   `handleConfigUpdated` listener needs no changes to also react to
+   this; the payload's `table_id` key rather than `kit_id` is the only
+   difference a listener could branch on, and today's handler doesn't
+   branch on either).
+
+**Whole-document re-read matters for correctness:** because each of the
+three save functions only updates its own section, and
+`update_table_settings_live_snapshot()` always writes all four
+sub-keys, propagating from a STALE `table_config_doc` (e.g. one
+captured before this save) would silently revert an unrelated section
+back to an older value. Always re-fetch via `get_table_config()`
+immediately before calling the propagation function — never reuse a
+document object from earlier in the same request or a prior request.
+
+**What does NOT change:** the one-time-snapshot COPY still happens
+exactly the same way at activity creation
+(`create_live_activity()`) — this feature only adds a way for that
+snapshot to be updated LATER, it doesn't change how or when the
+initial copy happens.
+
+**Testing note:** verified with mongomock — matching activity on the
+same table updates correctly, an activity on a DIFFERENT table is
+untouched, a COMPLETED (non-live) activity on the same table is
+untouched, the zero-live-activities case is a clean no-op, and two
+sequential saves of DIFFERENT sections (e.g. IPs, then push
+notifications) both persist correctly without either clobbering the
+other's prior propagated value. No `array_filters` or other mongomock-
+unsupported operator is involved, so — same as the kit-config
+propagation feature — this path IS fully covered by the automated test
+suite.
 
 ### Audio file storage
 
@@ -405,7 +518,7 @@ were verified).
 
 **`table-settings.js`** has three independent initializers, all wired on `DOMContentLoaded`:
 
-- **`initAudioSettings()`** — file selection is staged in a `pendingFiles` JS object keyed by slot id; **nothing uploads until "Save Audio Settings" is clicked** (deferred save — the one save-timing decision in this app that differs from PQPR's immediate-upload-on-select). Preview plays `URL.createObjectURL(pendingFile)` if a new file is staged for that slot, otherwise fetches the saved server file via the slot's `data-audio-url`. On Save, builds a single `FormData` with `audio_<slot_id>` (only for slots with a pending file) and `default_<slot_id>` for all 4 slots, POSTs multipart to `.../table-settings/audio/save`, then reconciles the UI from the response's `audio_settings`.
+- **`initAudioSettings()`** — file selection is staged in a `pendingFiles` JS object keyed by slot id; **nothing uploads until "Save Audio Settings" is clicked** (deferred save — the one save-timing decision in this app that differs from PQPR's immediate-upload-on-select). Preview plays `URL.createObjectURL(pendingFile)` if a new file is staged for that slot, otherwise fetches the saved server file via the slot's `data-audio-url`. On Save, builds a single `FormData` with `audio_<slot_id>` (only for slots with a pending file) and `default_<slot_id>` for all 4 slots (red slots hardcoded to `"enabled"` regardless of DOM state — see "Red audio always enabled," above), POSTs multipart to `.../table-settings/audio/save`, then reconciles the UI from the response's `audio_settings`.
 - **`initIpList()`** — staged array (`ips`), add/edit/delete all operate on the in-memory array and re-render; nothing reaches the server until "Save IP List" is clicked, which POSTs the whole array as JSON.
 - **`initPushNotifications()`** — same staged-array pattern for `emails`; the 4 notification radios (plus the conditional threshold input, which enables/disables itself based on its own row's radio via a `change` listener) are read fresh at Save time (not staged in JS state) and combined with the staged `emails` array into one POST to `.../table-settings/push-notifications/save`.
 
@@ -421,3 +534,4 @@ All three reuse the same `escapeHtml()`/`setStatus()`/`postJson()` helpers at th
 - `app/config/loader.py`'s fail-fast validation may not yet cover `configuration.tables` or the `table_configuration` collection name — confirm and extend if desired.
 - Tables 2 and 3 have no Current Kits Configuration, PQPR Analytics, or Table Settings data/routes/templates built — every data-layer function and route here already takes `table_id` as a parameter, so extending to another table is a matter of flipping `built: true` in `config.yaml` and confirming the existing routes work for that table_id (they should, since nothing is Table-1-specific except the one-time PQPR legacy-migration check).
 - **New cross-blueprint dependency this round:** `configuration/routes.py` now imports `from app.extensions import socketio` and reads `mongodb.collections.live_activities` from settings (for the live-activity propagation feature above) — previously this blueprint had zero dependency on Live Kitting Activities' collection or the Socket.IO singleton. Both are the same shared objects every other blueprint already uses, so this doesn't introduce a new subsystem, but it does mean Configuration is no longer fully independent of Live Kitting Activities at the code level (only in the sense of "reads a collection name and emits to a room it doesn't own" — no reverse dependency exists, Live Kitting Activities still knows nothing about Configuration).
+- **Table Settings propagation's correctness depends on always re-fetching the full document before propagating** (see "Live-activity propagation — Table Settings," above) — if a future edit to any of the three save routes ever reuses an in-memory document from earlier in the request instead of calling `get_table_config()` fresh immediately before `update_table_settings_live_snapshot()`, a live activity's snapshot could silently revert an unrelated section to a stale value. No test currently guards against this specific regression pattern (the existing tests check correctness of a single call, not "what happens if a stale doc is passed") — worth adding if this code is touched again.
