@@ -174,6 +174,52 @@ def check_table_busy():
 
 
 # ---------------------------------------------------------------------------
+# NEW - Order-number auto-suffix resolution
+# ---------------------------------------------------------------------------
+
+@live_kitting_activities_bp.route("/live-kitting-activities/resolve-order-number", methods=["POST"])
+def resolve_order_number():
+    """AJAX: {table_id, order_number} -> {success, order_number} or
+    {success: false, error}.
+
+    Called on Enter/blur of the Order Number field (before EDP lookup).
+    Checks activity_history for this table_id, scoped to TODAY's date
+    (server UTC date, matching how created_at/date-folder are computed
+    everywhere else in this build), for an existing entry with the same
+    base order_number. If found, returns the next free "_2"/"_3"/...
+    suffix; otherwise echoes the input back unchanged.
+
+    Only activity_history is checked (not live_activity_details) -
+    confirmed scope: only one live activity is ever allowed per table at
+    a time, so a NEW activity can't collide with a currently-live one on
+    order_number; the collision that matters is against a table's
+    ALREADY-COMPLETED activities for today.
+    """
+    body = request.get_json(silent=True) or {}
+
+    try:
+        table_id = int(body.get("table_id"))
+    except (TypeError, ValueError):
+        return jsonify(success=False, error="A valid station must be selected."), 400
+
+    if _require_built_table_json(table_id) is None:
+        return jsonify(success=False, error="Unknown or unbuilt station."), 400
+
+    order_number = (body.get("order_number") or "").strip()
+    if not order_number:
+        return jsonify(success=False, error="Order number is required."), 400
+
+    try:
+        resolved = activities_data.resolve_order_number_suffix(
+            _activity_history_collection(), table_id, order_number
+        )
+    except PyMongoError:
+        return jsonify(success=False, error="Could not connect to the database."), 500
+
+    return jsonify(success=True, order_number=resolved)
+
+
+# ---------------------------------------------------------------------------
 # Step 2: Camera check - carries step-1 data forward via query params
 # (no DB write happens until "Create Activity" is clicked)
 # ---------------------------------------------------------------------------
@@ -328,10 +374,5 @@ def monitor(activity_id):
         table_name=view["table_name"],
         green_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["green_popup_uptime_sec"],
         red_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["red_popup_uptime_sec"],
-        # NEW this session - config.yaml needs a new
-        # live_kitting.validate_popup_uptime_sec key (client's explicit
-        # call: a dedicated key, not reusing green's) - see
-        # TSD_LIVE_KITTING_ACTIVITIES.md for the exact addition and the
-        # matching app/config/loader.py fail-fast validation entry.
         validate_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["validate_popup_uptime_sec"],
     )

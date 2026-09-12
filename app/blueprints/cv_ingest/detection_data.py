@@ -305,19 +305,119 @@ def _camera_alert_switches(activity_doc, cam_id):
 
 
 # ---------------------------------------------------------------------------
-# Image storage - filesystem, namespaced per table_id (unchanged from the
-# previous version - only the Mongo side changed)
+# Image storage - filesystem, namespaced per table_id / date / kit / camera
+# / kit_index (RESTRUCTURED this round - see module docstring addendum
+# below and WORKING_STYLE notes on this being a scoped, explicitly
+# confirmed change, not an analogy-driven extension of the old scheme).
+#
+# OLD scheme (superseded): <base_dir>/<detection_image_dir>/table_<id>/<uuid><ext>
+#   - flat, one folder per table, server-generated uuid filename.
+#
+# NEW scheme:
+#   <base_dir>/<detection_image_dir>/table_<id>/<date>/<kit_name>_<order_number>/cam<N>/<kit_index>/<filename>
+#   - <date> is the ACTIVITY's own created_at date (YYYY-MM-DD, UTC) -
+#     i.e. the day the activity STARTED, not "today" - so every image
+#     for one activity lands in one date folder even if the activity
+#     runs past midnight.
+#   - <kit_name>_<order_number> come from the activity document itself
+#     (kit_name, order_number fields), NOT from the incoming form's
+#     "kitname" field - the activity doc is the authoritative source
+#     (same "never trust round-tripped client data" principle already
+#     applied to parts_configured at creation time).
+#   - <kit_index> is the kit index this image belongs to:
+#       * record_detection(): the CURRENT (pre-advance) kit index for
+#         this camera at detection time.
+#       * validate_kit(): the OLD index (the kit just being closed out
+#         by this validate call), confirmed explicitly - a validation
+#         image documents the kit that just finished, not the new one.
+#   - filename is now the ORIGINAL uploaded filename, unchanged
+#     (client's explicit instruction - previously a uuid). DeepStream is
+#     expected to never send a duplicate filename within the same
+#     kit_index folder; a collision is defensive-only (should not
+#     normally happen) and is resolved by appending "_1", "_2", ... 
+#     before the extension, with a warning logged - never a silent
+#     overwrite, never a hard failure.
+#
+# Rationale for the whole restructure (client's explicit ask): millions
+# of images in one flat per-table folder makes both loading (directory
+# listing) and deleting (e.g. clearing out one completed activity's
+# images) slow. Nesting by date/kit/camera/kit_index bounds how many
+# files ever sit in one directory and lets a whole activity's images be
+# deleted by removing one kit_name_order_number folder.
 # ---------------------------------------------------------------------------
 
-def save_detection_image(base_dir, detection_image_dir, table_id, file_storage, allowed_extensions):
-    """Saves an uploaded image file to
-    <base_dir>/<detection_image_dir>/table_<id>/<uuid><ext> and returns
-    the path relative to detection_image_dir. Returns None if no image
-    was sent - image presence/frequency was explicitly left open by the
-    client, so this must not hard-fail on a request with no image."""
-    import os
-    import uuid
+import os
+import re
 
+_UNSAFE_PATH_CHARS = re.compile(r'[^A-Za-z0-9._-]+')
+
+
+def _sanitize_path_segment(value, fallback="unknown"):
+    """Turns a free-text value (kit_name, order_number, or now also a
+    client-supplied filename) into a single safe filesystem path
+    segment: strips path separators and any ".." traversal attempt,
+    collapses anything else unsafe to "_", and never returns an empty
+    string (falls back to `fallback` so a path is always well-formed
+    even if the input was blank/all-unsafe-characters).
+
+    Applied to every free-text component of the new nested image path -
+    kit_name and order_number both come from the activity document
+    (trusted-ish, but still originally free text entered by an
+    operator - see FRD "no format validation" on order_number), and the
+    filename now comes directly from the uploaded file's own name
+    (client-supplied, previously replaced entirely by a uuid) - all
+    three need the same treatment before touching os.path.join.
+    """
+    value = str(value or "").strip()
+    # Reject traversal outright rather than relying on the char-collapse
+    # below to happen to neutralize it - belt and suspenders.
+    value = value.replace("..", "_")
+    value = _UNSAFE_PATH_CHARS.sub("_", value)
+    value = value.strip("_")
+    return value or fallback
+
+
+def _dedupe_filename(target_dir, filename):
+    """Returns a filename guaranteed not to collide with an existing
+    file in target_dir - appends "_1", "_2", ... before the extension
+    if needed. Defensive only: DeepStream is expected to never send a
+    duplicate filename within the same kit_index folder (confirmed),
+    so this path should not normally be exercised - if it is, a warning
+    is logged by the caller."""
+    if not os.path.exists(os.path.join(target_dir, filename)):
+        return filename, False
+
+    stem, ext = os.path.splitext(filename)
+    counter = 1
+    while True:
+        candidate = f"{stem}_{counter}{ext}"
+        if not os.path.exists(os.path.join(target_dir, candidate)):
+            return candidate, True
+        counter += 1
+
+
+def save_detection_image(
+    base_dir,
+    detection_image_dir,
+    activity_doc,
+    cam_id,
+    kit_index,
+    file_storage,
+    allowed_extensions,
+):
+    """Saves an uploaded image file to the nested path described above
+    and returns the path relative to detection_image_dir (e.g.
+    "table_1/2026-09-12/HVGKC-100_PO456/cam1/3/frame001.jpg"). Returns
+    None if no image was sent - image presence/frequency was explicitly
+    left open by the client, so this must not hard-fail on a request
+    with no image.
+
+    activity_doc: the ALREADY-FETCHED live_activity_details document
+    (record_detection/validate_kit both do a find_one() before this
+    point regardless - this reuses that same document rather than
+    querying Mongo again, so this restructure adds zero extra DB round
+    trips over the previous version).
+    """
     if not file_storage or not getattr(file_storage, "filename", ""):
         return None
 
@@ -327,13 +427,51 @@ def save_detection_image(base_dir, detection_image_dir, table_id, file_storage, 
             f'Image extension "{ext}" not allowed. Allowed: {", ".join(allowed_extensions)}'
         )
 
-    table_dir = os.path.join(base_dir, detection_image_dir, f"table_{table_id}")
-    os.makedirs(table_dir, exist_ok=True)
+    table_id = activity_doc.get("table_id")
 
-    filename = f"{uuid.uuid4().hex}{ext}"
-    file_storage.save(os.path.join(table_dir, filename))
+    created_at_raw = activity_doc.get("created_at")
+    try:
+        activity_date = datetime.fromisoformat(created_at_raw).date().isoformat()
+    except (TypeError, ValueError):
+        # Defensive only - created_at is always set at activity creation
+        # (see create_live_activity) and should never be missing/malformed
+        # on a live document. Falling back to today rather than raising
+        # keeps image capture from ever hard-failing over this.
+        activity_date = datetime.now(timezone.utc).date().isoformat()
 
-    return os.path.join(f"table_{table_id}", filename)
+    kit_name_segment = _sanitize_path_segment(activity_doc.get("kit_name"), "unknown-kit")
+    order_number_segment = _sanitize_path_segment(activity_doc.get("order_number"), "unknown-order")
+    kit_folder = f"{kit_name_segment}_{order_number_segment}"
+
+    target_dir = os.path.join(
+        base_dir,
+        detection_image_dir,
+        f"table_{table_id}",
+        activity_date,
+        kit_folder,
+        cam_id,
+        str(kit_index),
+    )
+    os.makedirs(target_dir, exist_ok=True)
+
+    original_name = os.path.basename(file_storage.filename)
+    stem, _ = os.path.splitext(original_name)
+    safe_stem = _sanitize_path_segment(stem, "image")
+    filename = f"{safe_stem}{ext}"
+
+    filename, was_deduped = _dedupe_filename(target_dir, filename)
+    if was_deduped:
+        import logging
+        logging.getLogger(__name__).warning(
+            "cv_ingest: filename collision in %s - saved as %s instead",
+            target_dir, filename,
+        )
+
+    file_storage.save(os.path.join(target_dir, filename))
+
+    return os.path.join(
+        f"table_{table_id}", activity_date, kit_folder, cam_id, str(kit_index), filename
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +561,12 @@ def _is_camera_completed(activity_doc, cam_id):
     return target > 0 and kit_index > target
 
 
-def record_detection(activities_collection, form, image_path):
+def record_detection(
+    activities_collection,
+    form,
+    image_file=None,
+    image_storage_settings=None,
+):
     """Validates + persists one detection event directly onto the
     live_activity_details document, and returns everything routes.py
     needs to build the Socket.IO payload.
@@ -457,6 +600,18 @@ def record_detection(activities_collection, form, image_path):
     happen in Python before we know which count field to $inc - but that
     is now the ONLY extra read, and only on the write path (not doubled
     for the count re-read anymore).
+
+    RESTRUCTURED this round: image_path is no longer a pre-computed
+    parameter - routes.py used to call save_detection_image() BEFORE
+    this function, using only table_id, which meant the nested
+    date/kit_name/order_number/kit_index path (see save_detection_image's
+    own docstring) had no activity_doc or kit_index to build from yet.
+    Now this function accepts the raw image_file + storage settings and
+    calls save_detection_image() itself, right after the find_one()
+    below - reusing that SAME activity_doc rather than querying Mongo a
+    second time, so this adds zero extra DB round trips over the
+    previous version. image_file/image_storage_settings both default to
+    None so a caller that genuinely has no image can skip them entirely.
 
     Returns:
     {
@@ -505,6 +660,24 @@ def record_detection(activities_collection, form, image_path):
     activity_id = activity_doc["_id"]
     kit_index = activity_doc.get(_kit_index_field(cam_id), 1)
     part_name = data["detected_part"]
+
+    # Image save moved here (from routes.py) - this is the first point
+    # where activity_doc + kit_index (pre-advance, this camera's CURRENT
+    # kit) are both available. image_storage_settings is None whenever
+    # routes.py has no image to save for this call - save_detection_image
+    # itself also short-circuits to None on no file, so both guards are
+    # kept for clarity/defensiveness rather than relying on just one.
+    image_path = None
+    if image_storage_settings is not None:
+        image_path = save_detection_image(
+            base_dir=image_storage_settings["base_dir"],
+            detection_image_dir=image_storage_settings["detection_image_dir"],
+            activity_doc=activity_doc,
+            cam_id=cam_id,
+            kit_index=kit_index,
+            file_storage=image_file,
+            allowed_extensions=image_storage_settings["allowed_extensions"],
+        )
 
     matched_part = _find_matching_part(activity_doc, cam_id, part_name)
     matched = matched_part is not None
@@ -797,7 +970,7 @@ def _find_validation_issues(activity_doc, cam_id, kit_index):
 # validate_kit - the /api/validate-kit handler's core logic
 # ---------------------------------------------------------------------------
 
-def validate_kit(activities_collection, form, image_path=None):
+def validate_kit(activities_collection, form, image_file=None, image_storage_settings=None):
     """Advances ONE camera's current_kit_index forward by 1 (cam1/cam2
     advance independently, confirmed). Does NOT touch part_counts,
     last_detected, or the OLD kit's events at all - that data stays
@@ -823,6 +996,17 @@ def validate_kit(activities_collection, form, image_path=None):
     validate out of. Both now write under
     detections.<cam>.<kit_index>.timing (restructured this session -
     see module docstring) rather than a separate kit_timings_cam{N} tree.
+
+    RESTRUCTURED this round (same reasoning as record_detection): the
+    image is now saved HERE, right after the find_one() below, using
+    the OLD kit index (the kit just being closed out by this validate
+    call - confirmed explicitly, not the new one) - rather than being
+    pre-saved in routes.py with only table_id available. image_file/
+    image_storage_settings default to None so a caller with no image
+    can omit them; this function's internal image_path variable (used
+    below for the confirmation pop-up / validation_error attachment) is
+    now computed inside this function instead of received as a
+    parameter.
 
     image_path (NEW this session) - the validation image, if one was
     sent with this validate_now call, ALREADY saved to disk by
@@ -884,6 +1068,22 @@ def validate_kit(activities_collection, form, image_path=None):
     field = _kit_index_field(cam_id)
     old_index = activity_doc.get(field, 1)
     now = _now_iso()
+
+    # Image save moved here (from routes.py) - old_index (the kit just
+    # being closed out by THIS validate call, confirmed explicitly) and
+    # activity_doc are both available now, which is everything
+    # save_detection_image needs to build the nested path.
+    image_path = None
+    if image_storage_settings is not None:
+        image_path = save_detection_image(
+            base_dir=image_storage_settings["base_dir"],
+            detection_image_dir=image_storage_settings["detection_image_dir"],
+            activity_doc=activity_doc,
+            cam_id=cam_id,
+            kit_index=old_index,
+            file_storage=image_file,
+            allowed_extensions=image_storage_settings["allowed_extensions"],
+        )
 
     # NEW - validation_error check, BEFORE any advance. Issues are
     # always computed (even if the master switch is off - client: "we

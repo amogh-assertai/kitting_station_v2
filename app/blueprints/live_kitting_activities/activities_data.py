@@ -152,6 +152,75 @@ def is_table_busy(collection, table_id):
 
 
 # ---------------------------------------------------------------------------
+# Order-number auto-suffix resolution (NEW)
+#
+# Only one "live" activity is ever allowed per table_id at a time (see
+# is_table_busy above), so a NEW activity being created can never
+# collide with a currently-live activity's order_number on the same
+# table - the only collision that matters is against that table's
+# ALREADY-COMPLETED activities for the day (activity_history). Per
+# client's explicit scope: check activity_history only.
+#
+# "Today" is taken as the server's current UTC date, matching every
+# other created_at/date-folder computation in this codebase (all
+# timestamps are stored UTC ISO strings - see _now_iso()).
+# ---------------------------------------------------------------------------
+
+def resolve_order_number_suffix(history_collection, table_id, order_number):
+    """Given a candidate order_number, returns either that same value
+    unchanged (no collision) or the next free "<order_number>_N" suffix,
+    checked against activity_history for this table_id + today's date
+    (activity's own created_at date, not a separate "date completed"
+    field - a completed activity keeps its original created_at).
+
+    Collision matching is exact-string on the BASE order_number (i.e.
+    "PO123" collides with an existing "PO123" or "PO123_2", etc. - not
+    a substring/prefix match), scanned in Python rather than a regex
+    query since the history collection is not expected to be large
+    enough per table/day to warrant one, and this keeps the logic
+    trivially testable with mongomock.
+    """
+    order_number = (order_number or "").strip()
+    if not order_number:
+        raise ValidationError("Order number is required.")
+
+    today = datetime.now(timezone.utc).date()
+
+    # Same table only - a collision on a DIFFERENT table's order_number
+    # is not a collision at all (order numbers are scoped per table,
+    # same as everything else in this app - see FRD "unique within this
+    # table" convention already used for Serial Number/EDP Number).
+    existing_docs = history_collection.find(
+        {"table_id": table_id},
+        {"order_number": 1, "created_at": 1},
+    )
+
+    existing_base_names = set()
+    for doc in existing_docs:
+        created_at_raw = doc.get("created_at")
+        if not created_at_raw:
+            continue
+        try:
+            doc_date = datetime.fromisoformat(created_at_raw).date()
+        except (TypeError, ValueError):
+            continue
+        if doc_date != today:
+            continue
+
+        existing_order = doc.get("order_number")
+        if existing_order:
+            existing_base_names.add(existing_order)
+
+    if order_number not in existing_base_names:
+        return order_number
+
+    suffix = 2
+    while f"{order_number}_{suffix}" in existing_base_names:
+        suffix += 1
+    return f"{order_number}_{suffix}"
+
+
+# ---------------------------------------------------------------------------
 # Live activities - create (finalize step, from the camera-check page)
 # ---------------------------------------------------------------------------
 

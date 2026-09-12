@@ -1,7 +1,13 @@
 /**
  * Live Kitting Activity - Create (step 1) page behavior.
  *
- * - Enter in Order Number moves focus to EDP Number (no submit).
+ * - Enter OR blur on Order Number triggers an AJAX check (NEW) against
+ *   that table's completed activities for today - if the typed order
+ *   number already exists for this table today, the field is silently
+ *   auto-filled with the next free "_2"/"_3"/... suffix before focus
+ *   moves on. If no collision, the value is left exactly as typed.
+ *   Enter then moves focus to EDP Number, same as before; blur does
+ *   not move focus (the browser's own tab order already did that).
  * - Enter in EDP Number triggers an AJAX lookup scoped to the selected
  *   table; exact match only, no suggestions (confirmed scope). On
  *   success, auto-fills Kit Name + hidden Kit Id and enables Next.
@@ -23,6 +29,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const lookupUrl = page.dataset.lookupEdpUrl;
   const checkBusyUrl = page.dataset.checkBusyUrl;
+  const resolveOrderNumberUrl = page.dataset.resolveOrderNumberUrl;
   const cameraCheckUrl = page.dataset.cameraCheckUrl;
 
   const form = document.getElementById("activity-form");
@@ -52,12 +59,61 @@ document.addEventListener("DOMContentLoaded", () => {
     nextButton.disabled = true;
   }
 
-  orderInput.addEventListener("keydown", (event) => {
+  // Tracks the last value actually sent to resolve-order-number, so a
+  // blur that fires right after Enter already resolved the same value
+  // doesn't fire a redundant second request (Enter moves focus to EDP,
+  // which triggers this field's own blur).
+  let lastResolvedValue = null;
+
+  async function resolveOrderNumber() {
+    const typedValue = orderInput.value.trim();
+    if (!typedValue) return;
+    if (typedValue === lastResolvedValue) return;
+
+    let response;
+    try {
+      response = await fetch(resolveOrderNumberUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          table_id: tableSelect.value,
+          order_number: typedValue,
+        }),
+      });
+    } catch (err) {
+      // Network hiccup on this convenience check should never block
+      // the operator from proceeding - the server re-validates
+      // everything for real at finalize regardless. Leave the typed
+      // value as-is and let them continue.
+      return;
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch (err) {
+      return;
+    }
+
+    if (data.success && data.order_number) {
+      orderInput.value = data.order_number;
+      lastResolvedValue = data.order_number;
+    } else {
+      lastResolvedValue = typedValue;
+    }
+  }
+
+  orderInput.addEventListener("keydown", async (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
+      await resolveOrderNumber();
       edpInput.focus();
       edpInput.select();
     }
+  });
+
+  orderInput.addEventListener("blur", () => {
+    resolveOrderNumber();
   });
 
   edpInput.addEventListener("input", clearResolvedKit);

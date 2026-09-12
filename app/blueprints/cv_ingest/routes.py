@@ -1,6 +1,6 @@
 import os
 
-from flask import current_app, jsonify, request, send_from_directory, url_for
+from flask import abort, current_app, jsonify, request, send_from_directory, url_for
 from pymongo.errors import PyMongoError
 
 from app.extensions import socketio
@@ -72,25 +72,25 @@ def detection_update():
     form = request.form
     image_file = request.files.get("image")
 
-    try:
-        settings = _live_kitting_settings()
-        image_path = detection_data.save_detection_image(
-            base_dir=current_app.config["BASE_DIR"],
-            detection_image_dir=settings["detection_image_dir"],
-            table_id=int(form.get("tableid")) if form.get("tableid") else None,
-            file_storage=image_file,
-            allowed_extensions=settings["allowed_image_extensions"],
-        )
-    except detection_data.ValidationError as exc:
-        return jsonify(success=False, reason="validation_error", message=str(exc)), 400
-    except (TypeError, ValueError):
-        return jsonify(success=False, reason="validation_error", message="tableid is required and must be an integer."), 400
+    # Image save moved INSIDE record_detection() this round (needs
+    # activity_doc + this camera's current kit_index to build the new
+    # nested date/kit_name/order_number/cam/kit_index path - neither is
+    # available here, only tableid is). routes.py now just passes the
+    # raw file through, plus the storage settings it needs - the actual
+    # save happens after record_detection's own find_one(), no separate
+    # lookup added here.
+    image_storage_settings = {
+        "base_dir": current_app.config["BASE_DIR"],
+        "detection_image_dir": _live_kitting_settings()["detection_image_dir"],
+        "allowed_extensions": _live_kitting_settings()["allowed_image_extensions"],
+    }
 
     try:
         result = detection_data.record_detection(
             _activities_collection(),
             form,
-            image_path,
+            image_file=image_file,
+            image_storage_settings=image_storage_settings,
         )
     except detection_data.ValidationError as exc:
         # NEW - "camera_locked" is now a possible reason here too (a
@@ -216,26 +216,23 @@ def validate_kit():
     form = request.form
     image_file = request.files.get("image")
 
-    try:
-        settings = _live_kitting_settings()
-        # Image on validate_now is now THREADED THROUGH to
-        # detection_data.validate_kit() (NEW this session) so the
-        # kit-completion confirmation pop-up can show it - previously
-        # saved to disk and then discarded entirely.
-        image_path = detection_data.save_detection_image(
-            base_dir=current_app.config["BASE_DIR"],
-            detection_image_dir=settings["detection_image_dir"],
-            table_id=int(form.get("tableid")) if form.get("tableid") else None,
-            file_storage=image_file,
-            allowed_extensions=settings["allowed_image_extensions"],
-        )
-    except detection_data.ValidationError as exc:
-        return jsonify(success=False, reason="validation_error", message=str(exc)), 400
-    except (TypeError, ValueError):
-        return jsonify(success=False, reason="validation_error", message="tableid is required and must be an integer."), 400
+    # Image save moved INSIDE validate_kit() this round - same reasoning
+    # as detection_update above (needs activity_doc + old_kit_index,
+    # neither available here). routes.py just passes the raw file +
+    # storage settings through.
+    image_storage_settings = {
+        "base_dir": current_app.config["BASE_DIR"],
+        "detection_image_dir": _live_kitting_settings()["detection_image_dir"],
+        "allowed_extensions": _live_kitting_settings()["allowed_image_extensions"],
+    }
 
     try:
-        result = detection_data.validate_kit(_activities_collection(), form, image_path)
+        result = detection_data.validate_kit(
+            _activities_collection(),
+            form,
+            image_file=image_file,
+            image_storage_settings=image_storage_settings,
+        )
     except detection_data.ValidationError as exc:
         if exc.reason == detection_data.REASON_CAMERA_LOCKED:
             current_app.logger.info(
@@ -495,20 +492,57 @@ def toggle_sound():
 
 
 # ---------------------------------------------------------------------------
-# GET /api/detection-image/<table_dir>/<filename> - serves saved detection
-# frames for the popup's <img> src. Path is exactly what
-# save_detection_image() returned (e.g. "table_1/ab12cd34.jpg"), so this
-# route mirrors that same two-segment shape rather than a wildcard path,
-# to avoid any directory-traversal ambiguity.
+# GET /api/detection-image/<path:subpath> - serves saved detection frames
+# for the popup's <img> src.
+#
+# RESTRUCTURED this round: the old route was a deliberate two-segment
+# shape (<table_dir>/<filename>) specifically to avoid a wildcard path,
+# since save_detection_image() only ever returned "table_N/<uuid>.ext".
+# The new nested scheme (table_id/date/kit_name_order/camN/kit_index/
+# filename) is variable-depth, so a fixed segment count no longer
+# matches what save_detection_image() actually returns - this now uses
+# Flask's <path:...> converter instead.
+#
+# The directory-traversal protection that the old two-segment shape got
+# "for free" is now done explicitly: subpath is normalized and the
+# final resolved path is confirmed to still sit under
+# detection_image_dir before serving. A request containing "..",
+# resolving outside detection_image_dir, or naming a directory instead
+# of a file is rejected with 404 - never a 500, never leaking whether a
+# path segment exists outside the intended tree.
 # ---------------------------------------------------------------------------
 
-@cv_ingest_bp.route("/api/detection-image/<table_dir>/<filename>")
-def detection_image(table_dir, filename):
+@cv_ingest_bp.route("/api/detection-image/<path:subpath>")
+def detection_image(subpath):
     settings = _live_kitting_settings()
-    root = os.path.join(
-        current_app.config["BASE_DIR"], settings["detection_image_dir"], table_dir
+    images_root = os.path.abspath(
+        os.path.join(current_app.config["BASE_DIR"], settings["detection_image_dir"])
     )
-    return send_from_directory(root, filename)
+
+    # normpath collapses "..", ".", and duplicate slashes BEFORE the
+    # containment check below - this is what actually neutralizes
+    # traversal attempts, not just string-matching on ".." (which could
+    # miss encoded or platform-specific variants).
+    requested_path = os.path.abspath(os.path.join(images_root, subpath))
+
+    # Containment check: the resolved path must still be inside
+    # images_root. os.path.commonpath is used rather than a plain
+    # startswith(), which can be fooled by a sibling directory that
+    # merely shares a string prefix (e.g. images_root="data/detections"
+    # vs a sibling "data/detections-other").
+    try:
+        if os.path.commonpath([images_root, requested_path]) != images_root:
+            abort(404)
+    except ValueError:
+        # commonpath raises ValueError on e.g. mixed drive letters on
+        # Windows - treat as "not contained", same as a failed check.
+        abort(404)
+
+    directory, filename = os.path.split(requested_path)
+    if not filename:
+        abort(404)
+
+    return send_from_directory(directory, filename)
 
 
 # ---------------------------------------------------------------------------
