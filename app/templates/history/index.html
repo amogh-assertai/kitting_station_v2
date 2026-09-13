@@ -97,7 +97,7 @@
                 </div>
               </td>
               <td class="history-table__actions">
-                <button type="button" class="btn btn--secondary btn--small history-action-report" disabled title="Coming soon">View Report</button>
+                <a href="{{ url_for('history.report', activity_id=row.id) }}" class="btn btn--secondary btn--small history-action-report">View Report</a>
                 <button type="button" class="btn btn--secondary btn--small history-action-download" disabled title="Coming soon">Download</button>
                 <button type="button" class="btn btn--danger btn--small history-action-delete">Delete</button>
               </td>

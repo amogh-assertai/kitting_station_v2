@@ -1,0 +1,261 @@
+/* Kit Detail - page-scoped, loaded via {% block extra_css %} only. */
+
+.kit-detail-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg, 1.5rem);
+}
+
+.kit-detail-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md, 1rem);
+  flex-wrap: wrap;
+}
+
+.kit-detail-header__crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  flex-wrap: wrap;
+}
+
+.kit-detail-header__cam {
+  color: var(--color-accent, #4a90d9);
+}
+
+.kit-detail-analytics {
+  display: flex;
+  gap: var(--spacing-lg, 1.5rem);
+  flex-wrap: wrap;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 8px;
+  padding: var(--spacing-md, 1rem);
+}
+
+.analytics-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 140px;
+}
+
+.analytics-stat__label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted, inherit);
+}
+
+.kit-detail-section__heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.1rem;
+  margin: 0 0 0.75rem 0;
+}
+
+.kit-detail-section--wrong-part .kit-detail-section__heading,
+.kit-detail-section--anomalies .kit-detail-section__heading {
+  color: #e05252;
+}
+
+.kit-detail-section__icon {
+  font-size: 1rem;
+}
+
+.anomaly-box {
+  border: 1px solid #c62828;
+  background: rgba(198, 40, 40, 0.08);
+  border-radius: 8px;
+  padding: var(--spacing-md, 1rem);
+  margin-bottom: var(--spacing-md, 1rem);
+}
+
+.anomaly-box__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.anomaly-box__badge {
+  background: #f9a825;
+  color: #3a2e00;
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.anomaly-box__resolution {
+  font-size: 0.85rem;
+  color: var(--color-text-muted, inherit);
+}
+
+.anomaly-box__part-name,
+.anomaly-box__parts {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.kit-detail-no-images {
+  font-size: 0.85rem;
+  color: var(--color-text-muted, inherit);
+  margin: 0;
+}
+
+.image-thumb-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.image-thumb {
+  width: 140px;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 6px;
+  cursor: zoom-in;
+  border: 1px solid var(--color-border, #333);
+  transition: transform 0.1s ease;
+}
+
+.image-thumb:hover {
+  transform: scale(1.03);
+}
+
+/* Part cards */
+
+.part-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--spacing-md, 1rem);
+}
+
+.part-card {
+  border: 2px solid var(--color-border, #333);
+  border-radius: 8px;
+  padding: var(--spacing-md, 1rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.part-card--green { border-color: #2e7d32; }
+.part-card--yellow { border-color: #f9a825; }
+.part-card--purple { border-color: #8e24aa; }
+.part-card--red { border-color: #c62828; }
+
+.part-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.part-card__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--color-text-muted, inherit);
+}
+
+.part-card__name {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.part-card__count {
+  font-weight: 700;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #fff;
+}
+
+.part-card--green .part-card__count { background: #2e7d32; }
+.part-card--yellow .part-card__count { background: #f9a825; color: #3a2e00; }
+.part-card--purple .part-card__count { background: #8e24aa; }
+.part-card--red .part-card__count { background: #c62828; }
+
+/* Lightbox */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+/* CRITICAL: the bare [hidden] attribute alone is NOT reliable here -
+   the UA stylesheet's [hidden] { display: none } rule is the same
+   specificity as the .lightbox class rule above, and author
+   stylesheets load AFTER the UA stylesheet, so .lightbox's own
+   `display: flex` wins and the element stays visible even with the
+   `hidden` attribute present (confirmed bug - the lightbox rendered
+   open on page load with the close button non-functional, tracked
+   back to exactly this). This rule makes the hidden state explicit
+   and unambiguous, overriding .lightbox's own display property. */
+.lightbox[hidden] {
+  display: none;
+}
+
+.lightbox__viewport {
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lightbox__image {
+  max-width: 90vw;
+  max-height: 85vh;
+  object-fit: contain;
+  cursor: zoom-in;
+  transition: transform 0.15s ease;
+}
+
+.lightbox__close {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 2rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.lightbox__nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  font-size: 2.5rem;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.lightbox__nav:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.lightbox__nav--prev { left: 1.5rem; }
+.lightbox__nav--next { right: 1.5rem; }

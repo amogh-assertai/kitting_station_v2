@@ -43,7 +43,7 @@ Active page/tab is visually highlighted throughout. Every page also has a global
 |---|---|---|
 | Home | Shell only | Landing page |
 | Live Kitting Activities | **Built** — UI, routes, and MongoDB schema complete; detected part counts are static until real detection events are wired | Start and monitor a live kit-packing run: create an activity, watch per-camera progress, complete it (normally or manually) |
-| History | **Built** — listing, filters, pagination, delete (incl. images); auto-completion → History still not wired (manual completion only) | Look up past kitting activity/records |
+| History | **Built** — listing, filters, pagination, delete (incl. images), Activity Report (kit-by-kit color-coded breakdown), Kit Detail drill-down with full-screen image viewer; auto-completion → History still not wired (manual completion only) | Look up past kitting activity/records |
 | Configuration (landing) | **Built** | Choose which table to configure |
 | Configuration → Table 1 (HVGKC-CELL) → Current Kits Configuration | **Built** | Create, edit, search, and delete kit definitions (parts, cameras, alert rules, per-camera alert toggles) |
 | Configuration → Table 1 (HVGKC-CELL) → PQPR Analytics | **Built** | Upload the PQPR Excel workbook; look up which components are in a kit, or which kits use a component |
@@ -54,7 +54,7 @@ Active page/tab is visually highlighted throughout. Every page also has a global
 ## Out of scope (not yet built)
 
 - Table 2 / Table 3 functionality (any of Current Kits Configuration, PQPR Analytics, Table Settings, or Live Kitting Activities for those tables)
-- History's "View Detailed Report" / "Download Report" buttons (present, disabled placeholders)
+- History's "Download Report" button (present, disabled placeholder — "View Detailed Report" is now fully built)
 - Auto-completion → History (an activity reaching `quantity_required` on both cameras does not yet move it into History — manual completion is currently the only path; see `FRD_HISTORY.md`)
 - Any authentication/authorization
 
@@ -63,4 +63,4 @@ Active page/tab is visually highlighted throughout. Every page also has a global
 - Shell (header, nav, theming, back button, table badge, sub-nav, fit-to-screen behavior): `FRD_BASE_LAYOUT.md`
 - Configuration section (table selection, both Table 1 sub-tabs, Table Settings, full functional detail): `FRD_CONFIGURATION.md`
 - Live Kitting Activities (landing page, create-activity flow, monitor page): `FRD_LIVE_KITTING_ACTIVITIES.md`
-- History (listing page, filters, pagination, delete): `FRD_HISTORY.md`
+- History (listing page, Activity Report, Kit Detail, filters, pagination, delete): `FRD_HISTORY.md`

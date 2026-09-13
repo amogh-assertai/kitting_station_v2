@@ -29,8 +29,8 @@ Runs on laptop monitors and larger fixed screens; no page-level scroll.
 | `docs/frd/FRD_LIVE_KITTING_ACTIVITIES.md` | Functional spec of Live Kitting Activities — landing page, create-activity flow, monitor page, live detection pop-ups, per-camera sound, kit timing, completion |
 | `docs/tsd/TSD_LIVE_KITTING_ACTIVITIES.md` | Technical spec — routes (incl. `/api/activity-settings`), embedded MongoDB schema (including its three schema-history revisions), the `cv_ingest` blueprint, detection pipeline, alert-type/master-switch logic, Socket.IO events, sound resolution, kit-level timing, completion detection, API error contract |
 | `docs/tsd/TSD_CONFIGURATION.md` | Technical spec of the Configuration section, including live-activity config propagation and audio-file caching |
-| `docs/frd/FRD_HISTORY.md` | Functional spec of History — listing page, filters (table + date range), columns, error-count meaning, pagination, delete (incl. image cleanup) |
-| `docs/tsd/TSD_HISTORY.md` | Technical spec — `history_data.py` contracts, Mongo filter/sort/pagination shape, error-tally source, image-folder deletion + the sanitizer-duplication caveat |
+| `docs/frd/FRD_HISTORY.md` | Functional spec of History — listing page, Activity Report (kit-by-kit color-coded breakdown), Kit Detail drill-down with image viewer, filters, delete (incl. image cleanup) |
+| `docs/tsd/TSD_HISTORY.md` | Technical spec — `history_data.py` contracts incl. `build_activity_report`/`build_kit_detail`, Mongo filter/sort/pagination shape, the switch-independent silent-issue detection logic, image-folder deletion + the sanitizer-duplication caveat, the lightbox `[hidden]`+`display` CSS bug and its fix |
 | `docs/WORKING_STYLE_AND_CONSTRAINTS.md` | How the client works. **Read before making any change or delivering anything.** |
 
 ## Multi-table concept
@@ -89,13 +89,22 @@ to detect against).
   `table/<date>/<kit>_<order>/cam<N>/<kit_index>/<original filename>`,
   to keep directory listing/deletion fast at expected volume. See
   `TSD_LIVE_KITTING_ACTIVITIES.md`'s "Image storage" section.
-- **History — listing page (NEW)** — filters (table + date range),
+- **History — listing page** — filters (table + date range),
   8-column table, pagination, per-activity error-count summary, delete
   (which also removes that activity's saved images). See
-  `FRD_HISTORY.md` / `TSD_HISTORY.md`. "View Detailed Report" /
-  "Download Report" are still disabled placeholders, and auto-completion
-  still doesn't feed this page (see above) — manual completion is
-  currently the only way an activity gets here.
+  `FRD_HISTORY.md` / `TSD_HISTORY.md`.
+- **History — Activity Report + Kit Detail (NEW)** — clicking "View
+  Report" now opens a full kit-by-kit breakdown: header, per-camera
+  summary stats (error counts, timing avg/min/max), and a color-coded
+  circle per kit (green/yellow/purple/red — silent vs. logged issues
+  are visually distinct, not just "error or no error"). Clicking a
+  circle opens Kit Detail — that one kit's own analytics, a wrong-part
+  section, an errors/anomalies section, and per-part cards with every
+  captured image, all viewable full-screen with zoom and
+  whole-page arrow navigation. "Download Report" is still a disabled
+  placeholder; auto-completion still doesn't feed this page (see
+  above) — manual completion is currently the only way an activity
+  gets here. See `FRD_HISTORY.md` / `TSD_HISTORY.md` for full detail.
 - **Shared shell content width widened 20% (NEW)** — `layout.css`'s
   `max-width` went from 1200px to 1440px, applied identically across
   header/main/footer. Global change, affects every page. See
@@ -169,27 +178,22 @@ to detect against).
 
 - Table 2 (Truck Cell 1) and Table 3 (Truck Cell 2) — still
   registry-only placeholders
-- A dedicated drill-down UI for one completed kit's retained
-  detection/timing/alert history (the data is fully recorded — per-kit
-  start/first-detection/validated timestamps, every individual
-  detection event's own timestamp, and every alert raised and how it
-  was resolved — no per-kit viewer exists yet). History's own listing
-  page (see below) now surfaces a SUMMARY of this per activity (error
-  counts, completion progress), but not a full per-kit breakdown —
-  that's still the "View Detailed Report" placeholder button.
 - `detections.<cam>.<kit>.validation` reserved schema key remains
   unpopulated — the validate-call's image is now actually USED (shown
-  on the kit-advance confirmation pop-up, and on a Validation Error
-  red-screen), but nothing writes a structured pass/fail record to this
-  specific key yet; that's still a separate, deferred concern
-- History's **listing page is built** (filters, pagination, error
-  summary, delete + image cleanup — see `FRD_HISTORY.md` /
-  `TSD_HISTORY.md`), but **auto-completion still does not move an
-  activity into History** — only the manual "Complete manually" button
-  does. An activity that finishes by hitting `quantity_required` on
-  both cameras currently just sits on the Live Kitting Activities
-  landing page indefinitely. History's own "View Detailed Report" /
-  "Download Report" buttons are also still disabled placeholders.
+  on the kit-advance confirmation pop-up, on a Validation Error
+  red-screen, and now also on the Kit Detail page's anomalies section),
+  but nothing writes a structured pass/fail record to this specific key
+  yet; that's still a separate, deferred concern
+- History's **listing page, Activity Report, and Kit Detail are all
+  built** (filters, pagination, error summary, delete + image cleanup,
+  a full kit-by-kit color-coded breakdown, and per-kit drill-down with
+  a full-screen image viewer — see `FRD_HISTORY.md` / `TSD_HISTORY.md`),
+  but **auto-completion still does not move an activity into History**
+  — only the manual "Complete manually" button does. An activity that
+  finishes by hitting `quantity_required` on both cameras currently
+  just sits on the Live Kitting Activities landing page indefinitely.
+  "Download Report" is still a disabled placeholder ("View Detailed
+  Report" is now fully built, no longer a placeholder).
 - No authentication/authorization layer
 - **`config.yaml` has `live_kitting.validate_popup_uptime_sec`, but
   `app/config/loader.py`'s fail-fast validation list still doesn't
@@ -197,6 +201,8 @@ to detect against).
   A `config.yaml` missing this key will not fail fast at startup as
   intended; it'll raise a `KeyError` later, at first request to the
   monitor page.
+- Kit Detail has no direct next/prev-kit navigation of its own — only
+  a "← Back to Report" link back to the circle grid.
 
 ## Tech stack (fixed — don't change without asking the client)
 

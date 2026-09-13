@@ -58,10 +58,12 @@ station_monitor/
 │   │   │                                # not routes.py - see TSD_LIVE_KITTING_ACTIVITIES.md), count/sound/
 │   │   │                                # timing resolution, completion detection (both per-camera and
 │   │   │                                # whole-activity), Mongo writes
-│   │   ├── history/                     # BUILT this session - was a single placeholder route.
-│   │   │   ├── routes.py               # GET /history (listing), POST /history/<id>/delete
-│   │   │   └── history_data.py         # filter/paginate/error-tally/delete (incl. image-folder cleanup) -
-│   │   │                                # see TSD_HISTORY.md
+│   │   ├── history/                     # was a single placeholder route originally, fully built since
+│   │   │   ├── routes.py               # GET /history (listing), POST /history/<id>/delete,
+│   │   │   │                            # GET /history/<id>/report (Activity Report),
+│   │   │   │                            # GET /history/<id>/report/<cam_id>/<kit_index> (Kit Detail)
+│   │   │   └── history_data.py         # filter/paginate/error-tally/delete (incl. image-folder cleanup),
+│   │   │                                # build_activity_report(), build_kit_detail() - see TSD_HISTORY.md
 │   │   └── configuration/
 │   ├── templates/
 │   │   ├── base.html
@@ -183,11 +185,15 @@ Carried over from before this revision, still open:
   not write to `activity_history` — see `TSD_HISTORY.md`'s own "Known
   gaps" and `TSD_LIVE_KITTING_ACTIVITIES.md`'s "Known gaps" for detail.
 
-This revision — History is now fully built (MongoDB-connected listing,
-filters, pagination, delete + image cleanup; see `TSD_HISTORY.md`), the
-detection image storage scheme was restructured, and an order-number
-auto-suffix was added to the create-activity flow — see
+This revision — History's Activity Report and Kit Detail pages were
+added on top of the earlier listing page (color-coded kit-by-kit
+breakdown, per-part drill-down, full-screen image viewer with zoom and
+whole-page navigation; see `TSD_HISTORY.md`), and a bug in the image
+lightbox's initial-hidden-state CSS was found and fixed (see
+`TSD_HISTORY.md`'s own writeup — a `[hidden]` + `display` specificity
+conflict, not specific to History's own code but worth knowing about
+if any other page ever reuses a `hidden`-toggled element). See
 `TSD_LIVE_KITTING_ACTIVITIES.md`'s own "Known gaps" section for the
-full list (red-alert-type logic, per-kit timers, a join-before-emit
-race on the socket connection, audio playback not yet verified with
-real MP3 files in a real browser, etc.).
+full list on that blueprint (red-alert-type logic, per-kit timers, a
+join-before-emit race on the socket connection, audio playback not yet
+verified with real MP3 files in a real browser, etc.).

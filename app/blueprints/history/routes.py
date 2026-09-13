@@ -1,6 +1,6 @@
 import math
 
-from flask import current_app, jsonify, render_template, request
+from flask import abort, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from . import history_bp
@@ -120,3 +120,66 @@ def delete(activity_id):
         return jsonify(success=False, error="Could not connect to the database."), 500
 
     return jsonify(success=True)
+
+
+# ---------------------------------------------------------------------------
+# Activity Report - kit-level detail/analytics page
+# ---------------------------------------------------------------------------
+
+@history_bp.route("/history/<activity_id>/report")
+def report(activity_id):
+    """Full kit-by-kit report for one completed activity - header,
+    summary stats, and per-kit-per-camera cards. Single find_one, no
+    extra queries - see history_data.build_activity_report."""
+    try:
+        doc = history_data.get_activity_by_id(_activity_history_collection(), activity_id)
+    except history_data.ValidationError:
+        abort(404)
+    except PyMongoError:
+        abort(500)
+
+    if not doc:
+        abort(404)
+
+    report_data = history_data.build_activity_report(doc)
+
+    return render_template(
+        "history/report.html",
+        active_page="history",
+        report=report_data,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Kit detail - single kit/camera drill-down, reached from a circle click
+# ---------------------------------------------------------------------------
+
+@history_bp.route("/history/<activity_id>/report/<cam_id>/<int:kit_index>")
+def kit_detail(activity_id, cam_id, kit_index):
+    """Single kit's full detail - wrong-part section, errors &
+    anomalies, per-part cards with every detection image. Single
+    find_one, no extra queries - see history_data.build_kit_detail."""
+    if cam_id not in history_data.CAM_IDS:
+        abort(404)
+
+    try:
+        doc = history_data.get_activity_by_id(_activity_history_collection(), activity_id)
+    except history_data.ValidationError:
+        abort(404)
+    except PyMongoError:
+        abort(500)
+
+    if not doc:
+        abort(404)
+
+    try:
+        detail = history_data.build_kit_detail(doc, cam_id, kit_index)
+    except history_data.ValidationError:
+        abort(404)
+
+    return render_template(
+        "history/kit_detail.html",
+        active_page="history",
+        activity_id=activity_id,
+        detail=detail,
+    )

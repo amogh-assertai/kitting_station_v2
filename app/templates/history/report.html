@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}Activity Report — {{ app_name }}{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/activity-report.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="report-page">
+
+  <div class="report-header">
+    <h1>{{ report.activity.kit_name }}</h1>
+    <div class="report-header__grid">
+      <div><span class="report-header__label">Table</span><span class="report-header__value">Table {{ report.activity.table_id }} — {{ report.activity.table_name }}</span></div>
+      <div><span class="report-header__label">Order #</span><span class="report-header__value">{{ report.activity.order_number }}</span></div>
+      <div><span class="report-header__label">EDP Number</span><span class="report-header__value">{{ report.activity.edp_number }}</span></div>
+      <div><span class="report-header__label">Qty Required</span><span class="report-header__value">{{ report.activity.quantity_required }}</span></div>
+      <div><span class="report-header__label">Status</span>
+        <span class="history-status-badge history-status-badge--{{ report.activity.status }}">
+          {{ "Completed" if report.activity.status == "completed" else "Completed Manually" }}
+        </span>
+      </div>
+      <div><span class="report-header__label">Started</span><span class="report-header__value report-timestamp" data-iso="{{ report.activity.created_at }}">—</span></div>
+      {% if report.activity.stopped_at %}
+      <div><span class="report-header__label">Stopped</span><span class="report-header__value report-timestamp" data-iso="{{ report.activity.stopped_at }}">—</span></div>
+      {% endif %}
+      {% if report.activity.stop_reason %}
+      <div><span class="report-header__label">Stop Reason</span><span class="report-header__value">{{ report.activity.stop_reason }}</span></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <section class="report-summary">
+    <h2>Summary</h2>
+
+    <div class="report-summary__columns">
+      {% for cam_id, cam_label in [("cam1", "Camera 1"), ("cam2", "Camera 2")] %}
+        <div class="report-summary__col">
+          <h3 class="report-summary__cam-heading">{{ cam_label }}</h3>
+
+          <div class="stat-block">
+            <div class="stat-row"><span>Validation Errors</span><strong>{{ report.summary.error_counts.by_camera[cam_id].validation_error }}</strong></div>
+            <div class="stat-row"><span>Wrong Part Errors</span><strong>{{ report.summary.error_counts.by_camera[cam_id].wrong_part }}</strong></div>
+          </div>
+
+          <h4 class="report-summary__timing-heading">Timing</h4>
+          <div class="timing-table-wrap">
+            <table class="timing-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Avg</th>
+                  <th>Min</th>
+                  <th>Max</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Total Kit Time</td>
+                  <td class="report-duration" data-seconds="{{ report.summary.timing[cam_id].total_kit_time.avg_sec }}">—</td>
+                  <td class="report-duration" data-seconds="{{ report.summary.timing[cam_id].total_kit_time.min_sec }}">—</td>
+                  <td class="report-duration" data-seconds="{{ report.summary.timing[cam_id].total_kit_time.max_sec }}">—</td>
+                </tr>
+                <tr>
+                  <td>Active Time</td>
+                  <td class="report-duration" data-seconds="{{ report.summary.timing[cam_id].active_time.avg_sec }}">—</td>
+                  <td class="report-duration" data-seconds="{{ report.summary.timing[cam_id].active_time.min_sec }}">—</td>
+                  <td class="report-duration" data-seconds="{{ report.summary.timing[cam_id].active_time.max_sec }}">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="report-summary__resolution">
+      <div class="stat-row"><span>System Errors</span><strong>{{ report.summary.error_counts.system_error }}</strong></div>
+      <div class="stat-row"><span>Process Errors</span><strong>{{ report.summary.error_counts.process_error }}</strong></div>
+      <div class="stat-row"><span>Total Logged</span><strong>{{ report.summary.error_counts.total }}</strong></div>
+    </div>
+  </section>
+
+  <section class="report-legend">
+    <span class="legend-item"><span class="legend-swatch legend-swatch--green"></span>Clean — no issues</span>
+    <span class="legend-item"><span class="legend-swatch legend-swatch--yellow"></span>Silent undercount — alert was off</span>
+    <span class="legend-item"><span class="legend-swatch legend-swatch--purple"></span>Silent wrong-part / missing / overcount — alert was off</span>
+    <span class="legend-item"><span class="legend-swatch legend-swatch--red"></span>Logged error — alert fired, operator resolved</span>
+    <span class="legend-item"><span class="chip-badge chip-badge--example">S</span>System error (resolved)</span>
+    <span class="legend-item"><span class="chip-badge chip-badge--example">P</span>Process error (resolved)</span>
+  </section>
+
+  <section class="report-kits">
+    <h2>Kits</h2>
+
+    <div class="report-kits__columns">
+      {% for cam_id, cam_label in [("cam1", "Camera 1"), ("cam2", "Camera 2")] %}
+        {% set cam_cards = report.cards | selectattr("cam_id", "equalto", cam_id) | list %}
+        <div class="report-kits__col">
+          <h3 class="report-kits__cam-heading">{{ cam_label }}</h3>
+          {% if cam_cards %}
+            <div class="kit-circle-grid">
+              {% for card in cam_cards %}
+                <button type="button"
+                        class="kit-circle kit-circle--{{ card.color }}"
+                        data-kit-index="{{ card.kit_index }}"
+                        data-cam-id="{{ card.cam_id }}"
+                        data-detail-url="{{ url_for('history.kit_detail', activity_id=report.activity.id, cam_id=card.cam_id, kit_index=card.kit_index) }}"
+                        title="Kit {{ card.kit_index }} — click for details">
+                  {% if card.chip_badge %}
+                    <span class="chip-badge">{{ card.chip_badge }}</span>
+                  {% endif %}
+                  <span class="kit-circle__number">{{ card.kit_index }}</span>
+                </button>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="report-empty">No kits recorded.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    {% if not report.cards %}
+      <p class="report-empty">No kit data recorded for this activity.</p>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/activity-report.js') }}"></script>
+{% endblock %}

@@ -411,3 +411,709 @@ def _delete_activity_images(doc, images_base_dir, detection_image_dir):
         logging.getLogger(__name__).warning(
             "history: failed to delete image folder %s: %s", resolved_path, exc
         )
+
+
+# ---------------------------------------------------------------------------
+# Activity Report - kit-level detail/analytics page (NEW this round)
+#
+# Reads a SINGLE already-fetched activity_history document (frozen -
+# nothing here mutates or writes anything back) and derives a full
+# report: header fields, activity/camera-level summary stats, and one
+# "card" per (camera, kit_index) pair that ever had data.
+#
+# CORE INSIGHT the whole design rests on (confirmed by reading
+# cv_ingest/detection_data.py directly, not assumed):
+#
+#   detections.<cam>.<kit_index>.errors only EVER gets an entry via
+#   resolve_error(), and resolve_error() only ever runs on an error that
+#   was raised in the first place because the relevant alert switch
+#   (alert_validation_error / alert_wrong_part_error) was ON at the
+#   moment the issue occurred. There is exactly one write path into
+#   that array, always switch-gated. This means presence/absence of a
+#   logged error entry is a COMPLETE, sufficient signal for "was the
+#   alert on or off" - this module never reads camerawise_alert_config
+#   itself, and does not need to.
+#
+#   Meanwhile, detections.<cam>.<kit_index>.events always tags every
+#   detection with "outcome": "matched"|"neglected"|"wrong_part"
+#   REGARDLESS of whether the wrong_part alert was on (see
+#   cv_ingest/detection_data.py's own comment: "a switch-off wrong_part
+#   is still tagged wrong_part here... even though it visually plays
+#   green"). And part_counts_cam{N} / parts_configured are always
+#   present and complete, letting missing/undercount/overcount be
+#   recomputed from raw data independent of whether alert_validation_error
+#   was on when it happened.
+#
+#   So: recompute what SHOULD have been flagged from raw data, compare
+#   against what WAS actually logged (which only exists if the switch
+#   was on) - anything in the "should have" set not covered by the
+#   "was logged" set is exactly the silent/alert-off case. No need to
+#   read the switches directly at all.
+#
+# Everything below is DUPLICATED from cv_ingest/detection_data.py, not
+# imported - per this project's explicit "History stays fully
+# independent, duplicate rather than import" convention (see this
+# file's own sanitizer note above for the same pattern). Any change to
+# the corresponding logic in detection_data.py (especially
+# _find_validation_issues, get_part_count, or the "outcome" tagging on
+# events) should be checked against this file too - flagged here on
+# purpose, same as the image-path sanitizer caveat.
+# ---------------------------------------------------------------------------
+
+CAM_IDS = ("cam1", "cam2")
+
+ISSUE_MISSING = "missing"
+ISSUE_UNDERCOUNT = "undercount"
+ISSUE_OVERCOUNT = "overcount"
+ISSUE_UNRECOGNIZED = "unrecognized"  # wrong-part's own issue tag, matches detection_data.py exactly
+
+CARD_COLOR_RED = "red"
+CARD_COLOR_PURPLE = "purple"
+CARD_COLOR_YELLOW = "yellow"
+CARD_COLOR_GREEN = "green"
+
+
+def get_activity_by_id(collection, activity_id):
+    """Fetches one activity_history document by id, or None. Raises
+    ValidationError on a malformed id - same convention as
+    delete_activity - so routes.py can turn that into a 400/404, never
+    a 500."""
+    object_id = _to_object_id(activity_id, "activity id")
+    return collection.find_one({"_id": object_id})
+
+
+# ---------------------------------------------------------------------------
+# Small path/field helpers - duplicated verbatim from
+# cv_ingest/detection_data.py (trivial one-liners, kept in sync by hand)
+# ---------------------------------------------------------------------------
+
+def _kit_index_field(cam_id):
+    return f"current_kit_index_{cam_id}"
+
+
+def _get_part_count(doc, cam_id, kit_index, part_name):
+    """DUPLICATED from cv_ingest/detection_data.py's get_part_count() -
+    reads the same fast-path counter, off a frozen history document
+    instead of a live one (identical shape, no live-mutation dependency
+    either way)."""
+    return (
+        doc.get(f"part_counts_{cam_id}", {})
+        .get(str(kit_index), {})
+        .get(part_name, 0)
+    )
+
+
+def _neglected_part_names(doc, cam_id):
+    """DUPLICATED from cv_ingest/detection_data.py's
+    _neglected_part_names() - camera-scoped neglect list, so a
+    neglected-on-cam1 part detected on cam2 is still a genuine
+    wrong_part there."""
+    return {
+        p.get("part_name")
+        for p in doc.get("neglect_parts", [])
+        if p.get("camera") == cam_id
+    }
+
+
+# ---------------------------------------------------------------------------
+# Switch-independent issue recomputation - DUPLICATED from
+# cv_ingest/detection_data.py's _find_validation_issues(), same logic,
+# unchanged: computes missing/undercount/overcount from raw
+# parts_configured + part_counts, regardless of whether
+# alert_validation_error was on when this kit actually ran.
+# ---------------------------------------------------------------------------
+
+def _validation_issues_switch_independent(doc, cam_id, kit_index):
+    issues = []
+    for part in doc.get("parts_configured", []):
+        if part.get("camera") != cam_id:
+            continue
+
+        part_name = part.get("part_name")
+        required = part.get("quantity_required", 0)
+        found = _get_part_count(doc, cam_id, kit_index, part_name)
+
+        if part.get("alert_missing") and found == 0:
+            issues.append({"part_name": part_name, "issue": ISSUE_MISSING, "required": required, "found": found})
+        elif part.get("alert_undercount") and 0 < found < required:
+            issues.append({"part_name": part_name, "issue": ISSUE_UNDERCOUNT, "required": required, "found": found})
+        elif part.get("alert_overcount") and found > required:
+            issues.append({"part_name": part_name, "issue": ISSUE_OVERCOUNT, "required": required, "found": found})
+
+    return issues
+
+
+def _wrong_part_events(doc, cam_id, kit_index):
+    """Every detection event in this kit tagged outcome == "wrong_part"
+    - present regardless of whether alert_wrong_part_error was on (see
+    module docstring above). Neglected-part detections are tagged
+    "neglected", not "wrong_part", so they're automatically excluded
+    here without any extra filtering - the tag itself already respects
+    the neglect list at write time."""
+    kit_data = doc.get("detections", {}).get(cam_id, {}).get(str(kit_index), {})
+    events = kit_data.get("events", []) or []
+    return [e for e in events if e.get("outcome") == "wrong_part"]
+
+
+def _logged_errors_for_kit(doc, cam_id, kit_index):
+    """detections.<cam>.<kit_index>.errors, as-is - every entry here
+    exists ONLY because the relevant alert switch was on when it
+    happened (see module docstring's core insight)."""
+    kit_data = doc.get("detections", {}).get(cam_id, {}).get(str(kit_index), {})
+    return kit_data.get("errors", []) or []
+
+
+# ---------------------------------------------------------------------------
+# Timing
+# ---------------------------------------------------------------------------
+
+def _iso_diff_seconds(later_iso, earlier_iso):
+    """later - earlier, in seconds. Returns None if either timestamp is
+    missing/malformed - callers treat None as "not computable" (e.g. a
+    kit with no detections yet has no first_part_detected_time), never
+    as zero."""
+    if not later_iso or not earlier_iso:
+        return None
+    try:
+        later = datetime.fromisoformat(later_iso)
+        earlier = datetime.fromisoformat(earlier_iso)
+    except (TypeError, ValueError):
+        return None
+    return (later - earlier).total_seconds()
+
+
+def _kit_timing(doc, cam_id, kit_index):
+    """Total Kit Time and Active Time both come from timestamps stored
+    on THIS SAME kit index's own timing record - confirmed against
+    cv_ingest/detection_data.py directly: actual_kit_start_time for kit
+    N is stamped either at activity creation (kit 1) or at the moment
+    kit N-1 was validated (kit 2+), but EITHER WAY it's written onto
+    kit N's own record at that moment - there is no cross-kit lookup
+    needed here, deliberately verified before building this rather than
+    assumed.
+
+    Total Kit Time = validated_at - actual_kit_start_time (this kit)
+    Active Time     = validated_at - first_part_detected_time (this kit)
+
+    Both are None if this kit was never validated (e.g. the last kit on
+    a manually-stopped activity, mid-progress) - a card for an
+    unvalidated kit shows blank/dash timing rather than a misleading
+    zero or a crash.
+    """
+    timing = (
+        doc.get("detections", {})
+        .get(cam_id, {})
+        .get(str(kit_index), {})
+        .get("timing", {})
+        or {}
+    )
+    validated_at = timing.get("validated_at")
+    start_time = timing.get("actual_kit_start_time")
+    first_detected = timing.get("first_part_detected_time")
+
+    return {
+        "total_kit_time_sec": _iso_diff_seconds(validated_at, start_time),
+        "active_time_sec": _iso_diff_seconds(validated_at, first_detected),
+    }
+
+
+def _avg_detection_gap_seconds(doc, cam_id, kit_index):
+    """Mean gap between consecutive detection events (by created_at),
+    within this one kit index only - never averaged across kit
+    boundaries. Returns None with fewer than 2 events (no gap to
+    measure)."""
+    kit_data = doc.get("detections", {}).get(cam_id, {}).get(str(kit_index), {})
+    events = kit_data.get("events", []) or []
+
+    timestamps = []
+    for e in events:
+        created_at = e.get("created_at")
+        if not created_at:
+            continue
+        try:
+            timestamps.append(datetime.fromisoformat(created_at))
+        except (TypeError, ValueError):
+            continue
+
+    if len(timestamps) < 2:
+        return None
+
+    timestamps.sort()
+    gaps = [
+        (timestamps[i] - timestamps[i - 1]).total_seconds()
+        for i in range(1, len(timestamps))
+    ]
+    return sum(gaps) / len(gaps)
+
+
+# ---------------------------------------------------------------------------
+# Per-kit-per-camera card - the core derivation
+# ---------------------------------------------------------------------------
+
+def _issue_matches_logged(issue, logged_errors):
+    """True if this specific (part_name, issue type) pair is covered by
+    ANY logged error's own "issues" list for this kit - i.e. the alert
+    fired for this exact problem. Matched on (part_name, issue) since
+    that's the pair _find_validation_issues() itself keys on, and it's
+    exactly what a logged validation_error's own "issues" list contains
+    verbatim (resolve_error() stores the SAME issues list that was
+    computed at raise-time, unchanged) - confirmed by reading
+    detection_data.py's validate_kit directly, not assumed."""
+    part_name = issue.get("part_name")
+    issue_type = issue.get("issue")
+    for err in logged_errors:
+        for logged_issue in err.get("issues", []) or []:
+            if logged_issue.get("part_name") == part_name and logged_issue.get("issue") == issue_type:
+                return True
+    return False
+
+
+def _has_logged_wrong_part_error(logged_errors):
+    """True if a wrong_part-type logged error exists for this kit at
+    all. Unlike validation issues (matched per-part), wrong_part errors
+    aren't matched per-event here - client's own confirmed data model
+    only ever raises/logs ONE active wrong_part error at a time per
+    kit+camera (the camera locks immediately on the first occurrence,
+    per detection_data.py's should_raise_wrong_part path), so "does a
+    wrong_part error exist for this kit" is the meaningful question, not
+    "does THIS specific event have its own logged twin"."""
+    return any(err.get("error_type") == "wrong_part" for err in logged_errors)
+
+
+def _kit_camera_card(doc, cam_id, kit_index):
+    """Builds one card's full data: color, every badge (logged AND
+    silent), and the three timing numbers. This is the one function
+    that implements the whole color/badge rule confirmed with the
+    client:
+
+      RED    - >=1 logged error exists (either type) - alert was on,
+               fired, operator resolved it as system_error/process_error.
+      PURPLE - no logged error, but a silent wrong_part occurred, OR a
+               silent missing/overcount validation issue occurred
+               (alert was off for that specific thing).
+      YELLOW - no logged error, but a silent UNDERCOUNT occurred.
+      GREEN  - none of the above.
+
+    Border color precedence: RED > PURPLE > YELLOW > GREEN (confirmed -
+    purple wins over yellow when a kit has both a silent undercount AND
+    a silent wrong-part/missing/overcount at once, since the client
+    judged wrong-part/validation-type silent issues more severe than
+    pure undercount).
+
+    Badges are independent of the border color - every distinct issue
+    found (logged or silent) gets its own badge, so a purple-bordered
+    card can still show a yellow-tagged undercount badge alongside its
+    purple badge(s).
+    """
+    logged_errors = _logged_errors_for_kit(doc, cam_id, kit_index)
+    all_issues = _validation_issues_switch_independent(doc, cam_id, kit_index)
+    wrong_part_events = _wrong_part_events(doc, cam_id, kit_index)
+
+    badges = []
+    has_purple_condition = False
+    has_yellow_condition = False
+
+    # Logged errors -> one badge each, tagged with resolution
+    for err in logged_errors:
+        resolution = err.get("resolution") or {}
+        badges.append({
+            "kind": "logged",
+            "error_type": err.get("error_type"),
+            "chosen_option": resolution.get("chosen_option"),
+            "issues": err.get("issues", []),
+        })
+
+    # Silent validation-type issues (missing/undercount/overcount) not
+    # covered by any logged error
+    for issue in all_issues:
+        if _issue_matches_logged(issue, logged_errors):
+            continue
+        if issue["issue"] == ISSUE_UNDERCOUNT:
+            has_yellow_condition = True
+            badges.append({"kind": "silent_undercount", "part_name": issue["part_name"],
+                            "required": issue["required"], "found": issue["found"]})
+        else:  # missing or overcount
+            has_purple_condition = True
+            badges.append({"kind": "silent_validation", "issue_type": issue["issue"],
+                            "part_name": issue["part_name"],
+                            "required": issue["required"], "found": issue["found"]})
+
+    # Silent wrong-part - only relevant if NO wrong_part error is
+    # already logged for this kit (if one is, it's already covered by
+    # the "logged" badges above, and re-flagging every individual event
+    # as ALSO silent would double-count against a single resolved error).
+    if wrong_part_events and not _has_logged_wrong_part_error(logged_errors):
+        has_purple_condition = True
+        badges.append({
+            "kind": "silent_wrong_part",
+            "count": len(wrong_part_events),
+            "part_names": sorted({e.get("detected_part") for e in wrong_part_events if e.get("detected_part")}),
+        })
+
+    if logged_errors:
+        color = CARD_COLOR_RED
+    elif has_purple_condition:
+        color = CARD_COLOR_PURPLE
+    elif has_yellow_condition:
+        color = CARD_COLOR_YELLOW
+    else:
+        color = CARD_COLOR_GREEN
+
+    timing = _kit_timing(doc, cam_id, kit_index)
+
+    return {
+        "cam_id": cam_id,
+        "kit_index": kit_index,
+        "color": color,
+        "badges": badges,
+        "chip_badge": _chip_badge_label(logged_errors),
+        "total_kit_time_sec": timing["total_kit_time_sec"],
+        "active_time_sec": timing["active_time_sec"],
+        "avg_detection_gap_sec": _avg_detection_gap_seconds(doc, cam_id, kit_index),
+    }
+
+
+def _chip_badge_label(logged_errors):
+    """Derives the small hanging S/P badge label shown on the kit
+    circle (NEW - circle-grid redesign). Only ever computed from LOGGED
+    errors - silent issues have no resolution/chosen_option to count,
+    so purple/yellow/green circles never get this badge (confirmed
+    scope).
+
+    Rule (confirmed with client):
+      - 0 logged errors -> None (no badge at all - circle isn't red).
+      - Exactly 1 logged error -> just the single letter ("S" or "P"),
+        no "+N" suffix.
+      - 2+ logged errors -> "P" wins the DISPLAYED letter whenever at
+        least one process_error resolution exists among them (even if
+        outnumbered by system_error), count shown is total_logged - 1
+        (client's exact example: 2 system + 1 process -> "P+2", i.e.
+        total=3, minus the one already represented by the letter
+        itself = +2). If none are process (all system, or a logged
+        error somehow has no resolution at all - defensive only, see
+        module docstring on this never actually happening), the letter
+        is "S".
+    """
+    total = len(logged_errors)
+    if total == 0:
+        return None
+
+    has_process = any(
+        (err.get("resolution") or {}).get("chosen_option") == "process_error"
+        for err in logged_errors
+    )
+    letter = "P" if has_process else "S"
+
+    if total == 1:
+        return letter
+
+    return f"{letter}+{total - 1}"
+
+
+def _all_kit_indices(doc, cam_id):
+    """Every kit_index that has a record under detections.<cam>, sorted
+    numerically (Mongo stores the key as a string - see
+    cv_ingest/detection_data.py's own note on this: "this module always
+    re-casts with str(kit_index) on read")."""
+    cam_data = doc.get("detections", {}).get(cam_id, {}) or {}
+    return sorted((int(k) for k in cam_data.keys()), key=int)
+
+
+# ---------------------------------------------------------------------------
+# Summary aggregation
+# ---------------------------------------------------------------------------
+
+def _empty_timing_stats():
+    return {"avg_sec": None, "min_sec": None, "max_sec": None}
+
+
+def _aggregate_timing(values):
+    values = [v for v in values if v is not None]
+    if not values:
+        return _empty_timing_stats()
+    return {
+        "avg_sec": sum(values) / len(values),
+        "min_sec": min(values),
+        "max_sec": max(values),
+    }
+
+
+def _build_summary(cards):
+    """Aggregates across ALL cards (both cameras) for activity-wide
+    stats, and separately per camera - both views requested by the
+    client ("cam-wise and activity wise")."""
+    summary = {
+        "error_counts": {
+            "total": 0,
+            "by_camera": {"cam1": {"validation_error": 0, "wrong_part": 0},
+                           "cam2": {"validation_error": 0, "wrong_part": 0}},
+            "system_error": 0,
+            "process_error": 0,
+        },
+        "timing": {
+            "activity": {"total_kit_time": _empty_timing_stats(), "active_time": _empty_timing_stats()},
+            "cam1": {"total_kit_time": _empty_timing_stats(), "active_time": _empty_timing_stats()},
+            "cam2": {"total_kit_time": _empty_timing_stats(), "active_time": _empty_timing_stats()},
+        },
+    }
+
+    total_kit_times = {"cam1": [], "cam2": [], "activity": []}
+    active_times = {"cam1": [], "cam2": [], "activity": []}
+
+    for card in cards:
+        cam_id = card["cam_id"]
+
+        for badge in card["badges"]:
+            if badge["kind"] != "logged":
+                continue
+            error_type = badge.get("error_type")
+            if error_type in ("validation_error", "wrong_part"):
+                summary["error_counts"]["total"] += 1
+                summary["error_counts"]["by_camera"][cam_id][error_type] += 1
+            chosen = badge.get("chosen_option")
+            if chosen == "system_error":
+                summary["error_counts"]["system_error"] += 1
+            elif chosen == "process_error":
+                summary["error_counts"]["process_error"] += 1
+
+        if card["total_kit_time_sec"] is not None:
+            total_kit_times[cam_id].append(card["total_kit_time_sec"])
+            total_kit_times["activity"].append(card["total_kit_time_sec"])
+        if card["active_time_sec"] is not None:
+            active_times[cam_id].append(card["active_time_sec"])
+            active_times["activity"].append(card["active_time_sec"])
+
+    for scope in ("activity", "cam1", "cam2"):
+        summary["timing"][scope]["total_kit_time"] = _aggregate_timing(total_kit_times[scope])
+        summary["timing"][scope]["active_time"] = _aggregate_timing(active_times[scope])
+
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Top-level assembler
+# ---------------------------------------------------------------------------
+
+def build_activity_report(doc):
+    """Builds the full Activity Report from one activity_history
+    document - no additional DB queries, everything needed is already
+    embedded on this one document (same "one find_one, complete
+    picture" principle used throughout this codebase)."""
+    header = {
+        "id": str(doc["_id"]),
+        "created_at": doc.get("created_at"),
+        "stopped_at": doc.get("stopped_at"),
+        "table_id": doc.get("table_id"),
+        "table_name": doc.get("table_name"),
+        "kit_name": doc.get("kit_name"),
+        "edp_number": doc.get("edp_number"),
+        "order_number": doc.get("order_number"),
+        "quantity_required": doc.get("quantity_required"),
+        "status": doc.get("status"),
+        "stop_reason": doc.get("stop_reason"),
+    }
+
+    cards = []
+    for cam_id in CAM_IDS:
+        for kit_index in _all_kit_indices(doc, cam_id):
+            cards.append(_kit_camera_card(doc, cam_id, kit_index))
+
+    summary = _build_summary(cards)
+
+    return {
+        "activity": header,
+        "summary": summary,
+        "cards": cards,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Kit detail - single kit, single camera drill-down (NEW this round)
+#
+# Reached by clicking a circle on the Activity Report. Same "one
+# find_one, complete picture" principle - everything needed is already
+# on the activity_history document; no extra queries.
+#
+# Confirmed section order (client): Header -> Analytics -> Wrong-Part
+# section (if any) -> Errors & Anomalies (if any, i.e. logged
+# validation_error OR silent validation-type issues) -> per-part cards.
+# ---------------------------------------------------------------------------
+
+def _image_url(image_path):
+    """Builds the URL for a saved detection frame, matching
+    cv_ingest/routes.py's own string-interpolation convention exactly
+    (not url_for - this is a different blueprint, and the route is a
+    fixed, known path: /api/detection-image/<path:subpath>). Returns
+    None if there's no image_path to build from - callers render "no
+    image" rather than a broken <img> tag."""
+    if not image_path:
+        return None
+    return f"/api/detection-image/{image_path}"
+
+
+def _part_card_color(found, required, alert_missing, alert_undercount, alert_overcount, is_logged):
+    """Same 4-state rule as the kit circle, applied at the PART level
+    instead of the whole-kit level - a part's own card is red if ITS
+    specific issue was logged, purple/yellow if silent, green if clean.
+    "is_logged" is whether this exact part+issue pair is covered by a
+    logged error's own issues list (see _issue_matches_logged) -
+    reused here at the part level rather than only the kit level."""
+    if found == required:
+        return CARD_COLOR_GREEN
+    if is_logged:
+        return CARD_COLOR_RED
+    if found == 0 or found > required:
+        return CARD_COLOR_PURPLE  # missing or overcount, silent
+    return CARD_COLOR_YELLOW  # undercount, silent
+
+
+def _events_for_part(doc, cam_id, kit_index, part_name):
+    """Every detection event tagged with this exact part_name - both
+    "matched" outcomes (the normal case) and any "wrong_part" outcome
+    that happens to share this part_name (shouldn't normally overlap
+    with a configured part_name, but included defensively rather than
+    assumed impossible)."""
+    kit_data = doc.get("detections", {}).get(cam_id, {}).get(str(kit_index), {})
+    events = kit_data.get("events", []) or []
+    return [e for e in events if e.get("detected_part") == part_name]
+
+
+def build_kit_detail(doc, cam_id, kit_index):
+    """Assembles the full kit-detail view for one (camera, kit_index)
+    pair on this activity. Raises ValidationError if this kit_index has
+    no record at all for this camera (bad url / stale link) - routes.py
+    turns this into a 404, never a 500."""
+    kit_data = doc.get("detections", {}).get(cam_id, {}).get(str(kit_index))
+    if kit_data is None:
+        raise ValidationError(f"No data recorded for {cam_id} kit {kit_index} on this activity.")
+
+    logged_errors = _logged_errors_for_kit(doc, cam_id, kit_index)
+    all_issues = _validation_issues_switch_independent(doc, cam_id, kit_index)
+    wrong_part_events = _wrong_part_events(doc, cam_id, kit_index)
+    timing = _kit_timing(doc, cam_id, kit_index)
+
+    header = {
+        "cam_id": cam_id,
+        "kit_index": kit_index,
+        "table_id": doc.get("table_id"),
+        "table_name": doc.get("table_name"),
+        "kit_name": doc.get("kit_name"),
+        "edp_number": doc.get("edp_number"),
+        "order_number": doc.get("order_number"),
+    }
+
+    analytics = {
+        "total_kit_time_sec": timing["total_kit_time_sec"],
+        "active_time_sec": timing["active_time_sec"],
+        "avg_detection_gap_sec": _avg_detection_gap_seconds(doc, cam_id, kit_index),
+    }
+
+    # Wrong-part section - one entry per DISTINCT detected_part among
+    # wrong_part-outcome events (grouped, not one row per raw event -
+    # client's own established convention elsewhere in this app groups
+    # repeat detections of the same unrecognized part). Each entry
+    # carries every image for that part_name, its own resolution if a
+    # wrong_part error was logged for this kit (there is at most one
+    # active wrong_part error per kit+camera - see
+    # cv_ingest/detection_data.py's own confirmed model).
+    wrong_part_error = next((e for e in logged_errors if e.get("error_type") == "wrong_part"), None)
+    wrong_part_groups = {}
+    for event in wrong_part_events:
+        name = event.get("detected_part")
+        wrong_part_groups.setdefault(name, []).append(event)
+
+    wrong_part_section = []
+    for part_name, events in wrong_part_groups.items():
+        wrong_part_section.append({
+            "part_name": part_name,
+            "is_logged": wrong_part_error is not None,
+            "resolution": (wrong_part_error or {}).get("resolution"),
+            "images": [
+                {"url": _image_url(e.get("image_path")), "detected_at": e.get("created_at")}
+                for e in sorted(events, key=lambda e: e.get("created_at") or "")
+                if e.get("image_path")
+            ],
+        })
+
+    # Errors & Anomalies - the validation-type issues (missing/
+    # undercount/overcount), logged or silent, EXCLUDING undercount from
+    # this red section per the established color rule (undercount alone,
+    # silent, is yellow-tier, not red/purple) - but a LOGGED validation
+    # error covers whatever issues it was raised for regardless of type,
+    # so a logged undercount still appears here as part of that entry.
+    validation_error = next((e for e in logged_errors if e.get("error_type") == "validation_error"), None)
+    anomalies_section = None
+    if validation_error or any(
+        issue["issue"] in (ISSUE_MISSING, ISSUE_OVERCOUNT) for issue in all_issues
+    ) or any(
+        issue["issue"] == ISSUE_UNDERCOUNT and not _issue_matches_logged(issue, logged_errors)
+        for issue in all_issues
+    ):
+        if validation_error:
+            issues_to_show = validation_error.get("issues", [])
+            resolution = validation_error.get("resolution")
+            image_url = _image_url(validation_error.get("image_path"))
+            detected_at = validation_error.get("detected_at")
+        else:
+            # Silent-only case - no logged error exists, but raw data
+            # shows a real issue anyway (alert was off). No resolution,
+            # no dedicated error image (none was ever captured, since
+            # no red-screen ever fired for this).
+            issues_to_show = [i for i in all_issues if not _issue_matches_logged(i, logged_errors)]
+            resolution = None
+            image_url = None
+            detected_at = None
+
+        anomalies_section = {
+            "is_logged": validation_error is not None,
+            "issues": issues_to_show,
+            "resolution": resolution,
+            "image_url": image_url,
+            "detected_at": detected_at,
+        }
+
+    # Per-part cards - one per part_configured on this camera (client's
+    # own confirmed source of truth for what a kit is supposed to
+    # contain), each with every one of its own detection-event images.
+    part_cards = []
+    for part in doc.get("parts_configured", []):
+        if part.get("camera") != cam_id:
+            continue
+
+        part_name = part.get("part_name")
+        required = part.get("quantity_required", 0)
+        found = _get_part_count(doc, cam_id, kit_index, part_name)
+
+        matching_issue = next(
+            (i for i in all_issues if i["part_name"] == part_name), None
+        )
+        is_logged = matching_issue is not None and _issue_matches_logged(matching_issue, logged_errors)
+
+        color = _part_card_color(
+            found, required,
+            part.get("alert_missing"), part.get("alert_undercount"), part.get("alert_overcount"),
+            is_logged,
+        )
+
+        events = _events_for_part(doc, cam_id, kit_index, part_name)
+        images = [
+            {"url": _image_url(e.get("image_path")), "detected_at": e.get("created_at")}
+            for e in sorted(events, key=lambda e: e.get("created_at") or "")
+            if e.get("image_path")
+        ]
+
+        part_cards.append({
+            "part_name": part_name,
+            "required": required,
+            "found": found,
+            "color": color,
+            "images": images,
+        })
+
+    return {
+        "header": header,
+        "analytics": analytics,
+        "wrong_part_section": wrong_part_section,
+        "anomalies_section": anomalies_section,
+        "part_cards": part_cards,
+    }
