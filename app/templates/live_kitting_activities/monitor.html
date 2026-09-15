@@ -5,6 +5,7 @@
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/live-activities.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/live-camera-history.css') }}">
 {% endblock %}
 
 {% block main_class %} app-main--full-bleed{% endblock %}
@@ -289,6 +290,43 @@
       </div>
     </div>
   </div>
+
+  <!-- Per-camera live History modal (NEW) - shows the CURRENTLY
+       RUNNING activity's own progress-so-far for ONE camera: same
+       color-coded circle grid + Kit Detail drill-down as the History
+       section's completed-activity Activity Report/Kit Detail pages,
+       but reading live_activity_details instead of activity_history.
+       Same [hidden]+display defensive pattern as .settings-modal-
+       backdrop above (see live-camera-history.css's own comment on
+       this). Content populated fresh via AJAX every open/circle-click,
+       same "never show stale content" discipline as the settings
+       modal - see live-camera-history.js. -->
+  <div class="live-history-modal-backdrop" data-live-history-backdrop hidden>
+    <div class="live-history-modal" role="dialog" aria-modal="true" aria-label="Camera history">
+      <div class="live-history-modal__topbar">
+        <button type="button" class="live-history-modal__close" data-live-history-close aria-label="Close">&times;</button>
+      </div>
+      <div class="live-history-modal__body" data-live-history-body>
+        <p class="live-history-modal__loading">Loading history&hellip;</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image lightbox for the live History modal's Kit Detail view -
+       separate top-level overlay (sits ABOVE the history modal itself,
+       higher z-index - see live-camera-history.css), same
+       click-to-open/wraparound-arrows/zoom/escape behavior as
+       History's own kit-detail.js, wired fresh each time Kit Detail
+       content is rendered into the modal (see wireLightbox() in
+       live-camera-history.js). -->
+  <div class="live-lightbox" data-live-lightbox hidden>
+    <button type="button" class="live-lightbox__close" data-live-lightbox-close aria-label="Close">&times;</button>
+    <button type="button" class="live-lightbox__nav live-lightbox__nav--prev" data-live-lightbox-prev aria-label="Previous image">&lsaquo;</button>
+    <div class="live-lightbox__viewport">
+      <img class="live-lightbox__image" data-live-lightbox-image alt="">
+    </div>
+    <button type="button" class="live-lightbox__nav live-lightbox__nav--next" data-live-lightbox-next aria-label="Next image">&rsaquo;</button>
+  </div>
 </div>
 {% endblock %}
 
@@ -300,4 +338,5 @@
      matches Flask-SocketIO 5.3.x's default protocol (Socket.IO v4). -->
 <script src="{{ url_for('static', filename='js/vendor/socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
+<script src="{{ url_for('static', filename='js/live-camera-history.js') }}"></script>
 {% endblock %}

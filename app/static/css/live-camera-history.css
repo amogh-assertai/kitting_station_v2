@@ -1,0 +1,462 @@
+/* live-camera-history.css - per-camera "History" modal on the monitor
+   page. Structural conventions (backdrop, [hidden] handling, box
+   shape) deliberately match monitor.css's existing .settings-modal-*
+   rules exactly - same variables, same [hidden]+display defensive
+   pattern already established there (see monitor.css's own comment on
+   this: [hidden] and an explicit `display` rule are equal specificity,
+   and the LATER one in source order wins, so an explicit
+   [hidden]{display:none} override is required, not optional). */
+
+.live-history-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 210; /* one above .settings-modal-backdrop's z-index: 200 -
+                   avoids an undefined stacking tie if both modals are
+                   ever opened without the first being closed first
+                   (not currently prevented by JS, so defended here in
+                   CSS instead). */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.55);
+  padding: var(--spacing-lg);
+}
+
+.live-history-modal-backdrop[hidden] {
+  display: none;
+}
+
+.live-history-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  max-height: min(85vh, 800px);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.live-history-modal__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.live-history-modal__close {
+  background: none;
+  border: none;
+  color: var(--color-text-primary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 var(--spacing-xs);
+}
+
+.live-history-modal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-lg);
+}
+
+.live-history-modal__loading,
+.live-history-modal__error {
+  color: var(--color-text-muted);
+}
+
+.live-history-modal__header h2 {
+  margin: 0 0 0.4rem 0;
+  font-size: 1.1rem;
+}
+
+.live-history-modal__meta {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-md);
+}
+
+.live-history-modal__summary {
+  display: flex;
+  gap: var(--spacing-lg);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-md);
+}
+
+.live-history-modal__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  padding: 0.6rem var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  margin: var(--spacing-md) 0;
+}
+
+/* legend-item / legend-swatch / stat-row / timing-table / kit-circle /
+   chip-badge / kit-detail-* / part-card / anomaly-box / image-thumb-*
+   classes below intentionally reuse the SAME class names as History's
+   own activity-report.css / kit-detail.css - same visual language,
+   same colors, so an operator sees a consistent color-coding scheme
+   whether they're looking at a live activity's progress-so-far or a
+   completed activity's full History record. Duplicated (not shared/
+   imported) since this is a different static/ directory context. */
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.legend-swatch--green { background: #2e7d32; }
+.legend-swatch--yellow { background: #f9a825; }
+.legend-swatch--purple { background: #8e24aa; }
+.legend-swatch--red { background: #c62828; }
+.legend-swatch--in-progress { background: #1e88e5; }
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  min-width: 140px;
+}
+
+.timing-table-wrap {
+  overflow-x: auto;
+  margin-bottom: var(--spacing-md);
+}
+
+.timing-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.timing-table th,
+.timing-table td {
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.timing-table th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+}
+
+.kit-circle-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.kit-circle {
+  position: relative;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 1.19rem;
+  color: #fff;
+  padding: 0;
+  transition: transform 0.1s ease;
+}
+
+.kit-circle:hover {
+  transform: scale(1.08);
+}
+
+.kit-circle--green { background: #2e7d32; }
+.kit-circle--yellow { background: #f9a825; color: #3a2e00; }
+.kit-circle--purple { background: #8e24aa; }
+.kit-circle--red { background: #c62828; }
+.kit-circle--in-progress {
+  background: #1e88e5;
+  cursor: default; /* NEW - the in-progress circle is not clickable
+                       (nothing to drill into yet - it has no
+                       validated_at, no finished timing/errors), unlike
+                       every other color which opens Kit Detail. */
+}
+.kit-circle--in-progress:hover {
+  transform: none;
+}
+
+.kit-circle__number {
+  pointer-events: none;
+}
+
+.chip-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 0.84rem;
+  font-weight: 700;
+  padding: 0.14rem 0.49rem;
+  border-radius: 999px;
+  line-height: 1.3;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Kit detail (inside the same modal, replacing the circle grid view) */
+
+.live-kit-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.kit-detail-header__crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  flex-wrap: wrap;
+  margin-top: var(--spacing-sm);
+}
+
+.kit-detail-header__cam {
+  color: var(--color-accent);
+}
+
+.kit-detail-analytics {
+  display: flex;
+  gap: var(--spacing-lg);
+  flex-wrap: wrap;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: var(--spacing-md);
+}
+
+.analytics-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 140px;
+}
+
+.analytics-stat__label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+}
+
+.kit-detail-section__heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  margin: 0 0 0.6rem 0;
+}
+
+.kit-detail-section--wrong-part .kit-detail-section__heading,
+.kit-detail-section--anomalies .kit-detail-section__heading {
+  color: #e05252;
+}
+
+.anomaly-box {
+  border: 1px solid #c62828;
+  background: rgba(198, 40, 40, 0.08);
+  border-radius: 8px;
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.anomaly-box__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.anomaly-box__badge {
+  background: #f9a825;
+  color: #3a2e00;
+  font-weight: 700;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.anomaly-box__resolution {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.anomaly-box__part-name,
+.anomaly-box__parts {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.kit-detail-no-images {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.image-thumb-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.image-thumb {
+  width: 120px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 6px;
+  cursor: zoom-in;
+  border: 1px solid var(--color-border);
+}
+
+.part-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.part-card {
+  border: 2px solid var(--color-border);
+  border-radius: 8px;
+  padding: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.part-card--green { border-color: #2e7d32; }
+.part-card--yellow { border-color: #f9a825; }
+.part-card--purple { border-color: #8e24aa; }
+.part-card--red { border-color: #c62828; }
+
+.part-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.part-card__label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.part-card__name {
+  font-weight: 700;
+}
+
+.part-card__count {
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: #fff;
+}
+
+.part-card--green .part-card__count { background: #2e7d32; }
+.part-card--yellow .part-card__count { background: #f9a825; color: #3a2e00; }
+.part-card--purple .part-card__count { background: #8e24aa; }
+.part-card--red .part-card__count { background: #c62828; }
+
+/* Lightbox - same rules as History's kit-detail.css, duplicated for
+   the same reason as everything else in this file (separate JS/CSS
+   context) - including the explicit [hidden] override, learned the
+   hard way once already on the History side. */
+
+.live-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.live-lightbox[hidden] {
+  display: none;
+}
+
+.live-lightbox__viewport {
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.live-lightbox__image {
+  max-width: 90vw;
+  max-height: 85vh;
+  object-fit: contain;
+  cursor: zoom-in;
+  transition: transform 0.15s ease;
+}
+
+.live-lightbox__close {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 2rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.live-lightbox__nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  font-size: 2.5rem;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.live-lightbox__nav:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.live-lightbox__nav--prev { left: 1.5rem; }
+.live-lightbox__nav--next { right: 1.5rem; }

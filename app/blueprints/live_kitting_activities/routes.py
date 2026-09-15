@@ -11,6 +11,7 @@ from pymongo.errors import PyMongoError
 
 from . import live_kitting_activities_bp
 from . import activities_data
+from . import live_activity_report_data
 
 # Static placeholder camera-check images. Real per-camera capture isn't
 # wired yet (camera check page's actual working is a separate, later
@@ -376,3 +377,66 @@ def monitor(activity_id):
         red_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["red_popup_uptime_sec"],
         validate_popup_uptime_sec=current_app.config["SETTINGS"]["live_kitting"]["validate_popup_uptime_sec"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-camera live History modal (on the monitor page) - server-rendered
+# HTML FRAGMENTS, not full pages (no {% extends "base.html" %}) and not
+# JSON - the monitor page's JS fetches these and drops the returned
+# markup straight into a modal container. Chosen over a JSON API
+# because the circle-grid/kit-detail markup (color classes, conditional
+# sections, image loops, lightbox) already exists as real Jinja
+# templates for History's Activity Report/Kit Detail pages - rebuilding
+# that same complexity in client-side JS would mean two copies of the
+# same markup logic that could drift apart. A fragment lets both
+# surfaces share (near-identical, camera-scoped) template partials.
+# ---------------------------------------------------------------------------
+
+@live_kitting_activities_bp.route("/live-kitting-activities/<activity_id>/history/<cam_id>")
+def live_camera_history(activity_id, cam_id):
+    """AJAX (matches the existing 'Current Settings' modal's own
+    fetch-JSON-then-render-client-side pattern in monitor.js, rather
+    than a server-rendered HTML fragment) -> {success, report} or
+    {success: false, error}."""
+    if cam_id not in live_activity_report_data.CAM_IDS:
+        return jsonify(success=False, error="Invalid camera."), 404
+
+    try:
+        doc = activities_data.get_activity_by_id(_activities_collection(), activity_id)
+    except activities_data.ValidationError:
+        return jsonify(success=False, error="Activity not found."), 404
+    except PyMongoError:
+        return jsonify(success=False, error="Could not connect to the database."), 500
+
+    if not doc:
+        return jsonify(success=False, error="Activity not found."), 404
+
+    report = live_activity_report_data.build_live_camera_report(doc, cam_id)
+    return jsonify(success=True, report=report)
+
+
+@live_kitting_activities_bp.route(
+    "/live-kitting-activities/<activity_id>/history/<cam_id>/<int:kit_index>"
+)
+def live_kit_detail(activity_id, cam_id, kit_index):
+    """AJAX -> {success, detail} or {success: false, error}. Same
+    JSON-fetch-then-render pattern as live_camera_history above."""
+    if cam_id not in live_activity_report_data.CAM_IDS:
+        return jsonify(success=False, error="Invalid camera."), 404
+
+    try:
+        doc = activities_data.get_activity_by_id(_activities_collection(), activity_id)
+    except activities_data.ValidationError:
+        return jsonify(success=False, error="Activity not found."), 404
+    except PyMongoError:
+        return jsonify(success=False, error="Could not connect to the database."), 500
+
+    if not doc:
+        return jsonify(success=False, error="Activity not found."), 404
+
+    try:
+        detail = live_activity_report_data.build_live_kit_detail(doc, cam_id, kit_index)
+    except live_activity_report_data.ValidationError as exc:
+        return jsonify(success=False, error=str(exc)), 404
+
+    return jsonify(success=True, detail=detail)
